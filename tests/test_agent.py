@@ -88,7 +88,8 @@ class Route(unittest.TestCase):
         c.text_chat.return_value = '{"type":"chat","reply":"Hi!"}'
         self.assertEqual(route(c, "hello"), ("chat", "Hi!"))
         c.text_chat.return_value = '{"type":"task","task":"search weather"}'
-        self.assertEqual(route(c, "check weather"), ("task", "search weather"))
+        self.assertEqual(route(c, "check weather"), ("task", "check weather"))  # 1.3.1: the user's own words are kept
+        self.assertEqual(route(c, "do it again"), ("task", "search weather"))
         c.text_chat.return_value = "plain text"
         self.assertEqual(route(c, "hey"), ("chat", "plain text"))
         c.text_chat.return_value = "sure"

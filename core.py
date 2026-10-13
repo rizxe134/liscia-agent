@@ -231,6 +231,24 @@ class Agent:
         return {"title": str(obj.get("title") or request), "summary": str(obj.get("summary") or ""), "columns": [str(c) for c in cols],
                 "rows": rows[: n or len(rows)]}
 
+    REPORT_SYSTEM = ("You write a short factual report from a data table. Use ONLY the table and summary given. Reply with ONE JSON object: "
+                     '{"intro": "<3-5 sentence introduction>", "items": [{"name": "<item name>", "text": "<2-3 sentences about it using its row>"}], '
+                     '"conclusion": "<1-2 sentences>"}. One item per table row, same order.')
+
+    def write_report(self, request, data):
+        """One model call: intro + a short paragraph per row + conclusion, for the Word report."""
+        table = " | ".join(data["columns"]) + "\n" + "\n".join(" | ".join(r) for r in data["rows"])
+        try:
+            raw = self.client.text_chat([{"role": "system", "content": self.REPORT_SYSTEM},
+                                         {"role": "user", "content": f"REQUEST: {request}\nSUMMARY: {data['summary']}\nTABLE:\n{table}"}],
+                                        json_mode=True, num_predict=self.cfg["agent"].get("report_tokens", 1800))
+            obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+            items = [i for i in (obj.get("items") or []) if isinstance(i, dict)]
+            return {"intro": str(obj.get("intro") or data["summary"]), "items": items, "conclusion": str(obj.get("conclusion") or "")}
+        except Exception as e:
+            self.log(f"[doc] report text unavailable ({type(e).__name__}); using the summary")
+            return None
+
     def research_to_document(self, task, out, logf):
         """Web research through the extension, then a local .docx/.xlsx/.txt with the results (opened in the default app)."""
         import webagent, docmaker, urllib.parse
@@ -280,9 +298,12 @@ class Agent:
         if n and len(data["rows"]) < min(n, 5) and text is not results_text:
             data2 = self.extract_data(request, results_text, search, n)
             if len(data2["rows"]) > len(data["rows"]): data, url = data2, search
-        saved = []
-        for kind in out.get("kinds") or [out["kind"]]:  # several outputs from the same extracted data
-            path = docmaker.make(kind, out.get("name") or out.get("title") or data["title"], data["summary"], data["columns"], data["rows"], source=url)
+        saved = []; kinds = out.get("kinds") or [out["kind"]]
+        report = self.write_report(task, data) if "docx" in kinds and data["rows"] and re.search(r"\breport|essay|write[- ]?up|explain|describe|detail", task, re.I) else None
+        if report: logf.write(json.dumps({"report": {"items": len(report.get("items") or []), "secs": round(time.time() - t0, 1)}}) + "\n")
+        for kind in kinds:  # several outputs from the same extracted data
+            path = docmaker.make(kind, out.get("name") or out.get("title") or data["title"], data["summary"], data["columns"], data["rows"], source=url,
+                                 report=report if kind == "docx" else None)
             opened = docmaker.open_file(path); saved.append((path, opened))
             logf.write(json.dumps({"document": path, "rows": len(data["rows"]), "opened": opened, "secs": round(time.time() - t0, 1)}) + "\n")
         names = ", ".join(str(r[1] if len(r) > 1 else r[0]) for r in data["rows"][:5])
@@ -610,7 +631,8 @@ class Agent:
 
 ROUTER = """You are the router for a local assistant that can also control the user's computer.
 Decide whether the user's latest message needs the computer (opening sites/apps, clicking, typing, searching
-the web in the browser) or is just conversation/questions that can be answered directly.
+the web in the browser, looking things up, making Word/Excel/PowerPoint/text files) or is just conversation/questions that can be answered directly.
+If the user asks you to DO something (look up, make, create, open, write, save) it is a task, even if it has typos. When in doubt, it is a task.
 Reply with ONE JSON object only: {"type": "chat"}  or  {"type": "task", "task": "<clear instruction for the computer agent>"}"""
 
 import re as _re
@@ -618,7 +640,28 @@ IMPERATIVE = _re.compile(r"^\s*(?:please\s+|now\s+|then\s+|ok\s+|okay\s+|and\s+|
     r"(?:open|launch|start|go to|visit|navigate|click|tap|press|type|search|play|watch|scroll|close|quit|"
     r"switch to|find|download|log ?in|sign ?in|fill|select|choose|pause|mute|bring up|show me)\b", _re.I)
 
-CHAT_SYSTEM = "You are a friendly, concise, smart local assistant running on the user's own computer."
+CHAT_SYSTEM = ("You are Liscia, a friendly, concise, smart local assistant running on the user's own computer. "
+               "You CAN act on this computer: open apps and websites, search the web, and create Word, Excel, PowerPoint and text files. "
+               "Never say you can't create files or use the computer. If the user asks for something you can do, don't give how-to steps: "
+               "tell them to just ask you to do it (it will run as a task).")
+
+ACTION_RE = _re.compile(r"\b(look ?up|search|google|find|open|launch|go to|visit|play|watch|make|create|write|build|generate|prepare|draft|"
+                        r"put|save|export|add|list|download|type|click|fill|send|book|order|compile|gather|collect|research)\b", _re.I)
+SMALLTALK_RE = _re.compile(r"^\s*(hi|hello|hey|yo|thanks|thank you|thx|good (morning|night|evening)|how are you|what'?s up|bye|ok|okay|cool|nice|lol)\b", _re.I)
+
+def needs_task(message):
+    """Code-side chat-vs-task decision (runs before the model): planner rules + action verbs + file words."""
+    import planner
+    m = intents.fix_typos(message or "")
+    if _re.match(r"^\s*(how (do|can|would|should) (i|you|we)|how to|what is|what are|explain)\b", m, _re.I) and not _re.search(r"\b(for me|look ?up|search)\b", m, _re.I):
+        return False  # a question about how something works stays chat
+    if planner.file_outputs(m) and (ACTION_RE.search(m) or planner.needs_facts(m)): return True
+    if intents.output_request(m): return True
+    if SMALLTALK_RE.match(m) and not ACTION_RE.search(m): return False
+    if ACTION_RE.search(m) and not _re.match(r"^\s*(what|who|why|how|when|where|which|is|are|do|does|can|should)\b(?!.*\b(look ?up|search|google|open|make|create|play)\b)", m, _re.I):
+        return True
+    rp = planner.rule_plan(m)
+    return bool(rp.get("sure")) and rp["intent"] != "desktop"
 
 def route(client, message, history=(), on_token=None):
     """Return ("chat", reply) or ("task", task). '/do ...' forces a task, '/chat ...' forces chat.
@@ -626,7 +669,7 @@ def route(client, message, history=(), on_token=None):
     m = message.strip()
     if m.lower().startswith("/do "): return "task", m[4:].strip()
     hist = list(history)[-10:]
-    if intents.plan(m)[0] or IMPERATIVE.match(m):
+    if intents.plan(m)[0] or IMPERATIVE.match(m) or needs_task(m):
         return "task", m
     force_chat = m.lower().startswith("/chat ")
     if force_chat:
@@ -639,7 +682,8 @@ def route(client, message, history=(), on_token=None):
         except ValueError:
             obj = {}
         if obj.get("type") == "task" and obj.get("task"):
-            return "task", str(obj["task"])
+            # keep the user's own words for anything self-contained; the rewrite only resolves "do that again"-style references
+            return "task", (str(obj["task"]) if _re.search(r"\b(it|that|this|them|again|same)\b", m, _re.I) and len(m.split()) <= 8 else m)
         if obj.get("reply"):  # some models answer directly anyway
             return "chat", str(obj["reply"]).strip()
     msgs = [{"role": "system", "content": CHAT_SYSTEM}] + hist + [{"role": "user", "content": m}]

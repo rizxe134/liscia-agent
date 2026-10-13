@@ -159,7 +159,8 @@ FACTS_RE = re.compile(r"\b(top \d+|richest|poorest|latest|newest|news|best|worst
                       r"cost|weather|population|statistics|stats|ranking|rankings|current|today|this year|20\d\d|who|what|when|where|"
                       r"summary of|information|info|facts|data|list of|history of|reviews?|specs|schedule|scores?|results)\b", re.I)
 
-APP_KIND = [(r"excel|google sheets|sheets|numbers|spreadsheet|xlsx|csv", "xlsx"),
+APP_KIND = [(r"powerpoint|pptx?|slides|keynote|presentation|deck", "pptx"),
+            (r"excel|google sheets|sheets|numbers|spreadsheet|xlsx|csv", "xlsx"),
             (r"word|google docs|docs|pages|document|docx|doc", "docx"),
             (r"notepad|textedit|text ?edit|text file|notes?|txt", "txt")]
 _VERIFY = re.compile(r"[.,;]?\s*(?:and\s+)?(?:please\s+)?(?:verify|double[- ]check|check|confirm|make sure)\b.*$", re.I)
@@ -174,7 +175,7 @@ def _output_first(t):
     'make an excel spreadsheet of the top 10 laptops' -> output request."""
     s = _VERIFY.sub("", t).strip(" .")
     m = re.match(_LEAD + r"(?:open|launch|start|use|go to|go into)\s+(?:up\s+)?(?:microsoft\s+|ms\s+)?"
-                 r"(excel|word|notepad|google sheets|sheets|google docs|numbers|pages|textedit|text ?edit)\b\s*[,.]?\s*(?:and\s+|then\s+)?(.*)$", s, re.I)
+                 r"(excel|word|powerpoint|notepad|google sheets|sheets|google docs|google slides|keynote|numbers|pages|textedit|text ?edit)\b\s*[,.]?\s*(?:and\s+|then\s+)?(.*)$", s, re.I)
     if m:
         kind, rest = _kind(m.group(1)), m.group(2)
         rest = re.sub(r"^(?:(?:and|then)\s+)?(?:create|make|start|open|add)\s+(?:a\s+|an\s+)?(?:new\s+|blank\s+|empty\s+)?"
@@ -214,7 +215,13 @@ def requested_count(text):
 TYPOS = {"claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
          "serach": "search", "seach": "search", "saerch": "search", "searh": "search", "sreach": "search", "serch": "search",
          "youtueb": "youtube", "yotube": "youtube", "youtub": "youtube", "yt": "youtube", "youube": "youtube", "you tube": "youtube",
-         "plya": "play", "paly": "play", "pley": "play", "opne": "open", "oepn": "open", "vidoe": "video", "vedio": "video"}
+         "plya": "play", "paly": "play", "pley": "play", "opne": "open", "oepn": "open", "vidoe": "video", "vedio": "video",
+         "exacel": "excel", "exel": "excel", "excell": "excel", "exccel": "excel", "ecxel": "excel", "excle": "excel", "exce": "excel",
+         "hseet": "sheet", "sheeet": "sheet", "shet": "sheet", "sheat": "sheet", "spreadshet": "spreadsheet", "spredsheet": "spreadsheet",
+         "wrod": "word", "wrd": "word", "wordd": "word", "docuemnt": "document", "documnet": "document", "dcoument": "document",
+         "pwerpoint": "powerpoint", "powerpiont": "powerpoint", "powerpont": "powerpoint", "power point": "powerpoint", "power-point": "powerpoint",
+         "powepoint": "powerpoint", "ppoint": "powerpoint", "presentaion": "presentation", "presntation": "presentation", "addtion": "addition",
+         "make make": "make", "reprot": "report", "raport": "report"}
 
 def fix_typos(text):
     t = text

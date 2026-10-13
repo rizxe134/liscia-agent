@@ -4,7 +4,7 @@ import datetime, json, re
 import intents
 
 INTENTS = ("web_answer", "open_site", "media_play", "web_research_to_files", "web_interact", "desktop")
-FILE_KINDS = ("docx", "xlsx", "txt")
+FILE_KINDS = ("docx", "xlsx", "pptx", "txt")
 
 SCHEMA = {"type": "object", "properties": {
     "intent": {"type": "string", "enum": list(INTENTS)},
@@ -19,7 +19,7 @@ intent:
  web_answer = a question answered by searching the web (facts, news, prices, "who/what/how many").
  open_site = just open a website.
  media_play = search/play a video or song (YouTube).
- web_research_to_files = find information online AND save it to a file: Word/document -> "docx", Excel/sheet/spreadsheet/table -> "xlsx", Notepad/text file/notes -> "txt" (several allowed).
+ web_research_to_files = find information online AND save it to a file: Word/document -> "docx", Excel/sheet/spreadsheet/table -> "xlsx", PowerPoint/slides/presentation/deck -> "pptx", Notepad/text file/notes -> "txt" (several allowed).
  web_interact = do something on a website (click, log in, fill a form, scroll, add to cart).
  desktop = operate a local app with no web content (calculator, settings, files, music player).
 query = the search words (no filler; add {year} if the request says recent/latest/current/now). site = website name if one is named, else "".
@@ -35,6 +35,7 @@ Examples:
 
 WORD_RE = re.compile(r"\b(word(?!\s+(?:for|by|of)\b)|docx|document|doc|google docs|pages)\b", re.I)
 XLSX_RE = re.compile(r"\b(excel|spread ?sheets?|sheets?|xlsx|csv|workbook|google sheets|numbers app)\b", re.I)
+PPTX_RE = re.compile(r"\b(powerpoint|pptx?|slides?|slide ?deck|deck|presentation|keynote|google slides)\b", re.I)
 TXT_RE = re.compile(r"\b(notepad|text ?file|txt|notes? file|textedit)\b", re.I)
 DESKTOP_APP_RE = re.compile(r"\b(calculator|calc|settings|control panel|file explorer|explorer|finder|paint|photos|camera|clock|alarm|"
                             r"spotify app|music app|terminal|task manager|volume|brightness|bluetooth|wi-?fi|screenshot|recycle bin|trash|desktop)\b", re.I)
@@ -46,10 +47,11 @@ def today():
     return datetime.date.today()
 
 def file_outputs(task):
-    t = task or ""
+    t = intents.fix_typos(task or "")
     out = []
     if WORD_RE.search(t): out.append("docx")
     if XLSX_RE.search(t): out.append("xlsx")
+    if PPTX_RE.search(t): out.append("pptx")
     if TXT_RE.search(t): out.append("txt")
     return out
 
@@ -77,6 +79,36 @@ def clean_query(task):
     t = re.sub(r"^\s*(?:listing|list|with|containing|about|of|for|showing|and|the)\s+", "", t.strip(), flags=re.I)
     t = re.sub(r"\s+", " ", t).strip(" .,?!")
     return t
+
+INSTR_RE = re.compile(
+    r"\b(?:(?:then|and|also|as well as|plus|with)\s+)*(?:(?:can|could|would|will)\s+you\s+|please\s+)?"
+    r"(?:open|launch|start|use|look up|lookup|search(?: for)?|find(?: out)?|google|make|create|build|write|prepare|generate|produce|put|save|export|add|do|give me)\s+"
+    r"(?:me\s+|up\s+|it\s+|them\s+|that\s+|this\s+)?(?:a\s+|an\s+|the\s+|my\s+|some\s+)?(?:new\s+|blank\s+|small\s+|short\s+|full\s+|fuller\s+|quick\s+)*"
+    r"(?:(?:microsoft|ms|google)\s+)?(?:excel|word|powerpoint|notepad|sheets?|spreadsheets?|workbooks?|documents?|docs?|reports?|lists?|tables?|files?|"
+    r"presentations?|decks?|slides?|summary|summaries)?\b"
+    r"|\b(?:in|into|on|to|as|of)\s+(?:a\s+|an\s+|the\s+)?(?:new\s+|small\s+)?(?:(?:microsoft|ms)\s+)?(?:excel|word|powerpoint|notepad)\s*(?:sheets?|spreadsheets?|documents?|docs?|files?|presentations?|decks?|slides?)?\b"
+    r"|\b(?:excel|word|powerpoint)\s+(?:sheets?|spreadsheets?|documents?|docs?|files?|presentations?|decks?)\b"
+    r"|\b(?:with\s+)?(?:an?\s+)?addition\s+of\b|\bas well as\b|\b(?:a\s+)?(?:report|list|presentation)\s+(?:on|of|about)\b"
+    r"|\b(?:(?:a|an)\s+)?(?:small\s+|short\s+|quick\s+)?(?:excel|word|powerpoint|notepad|pptx?|docx|xlsx)\b(?:\s+(?:of|about|on)\s+(?:it|them|that|this))?"
+    r"|\bwhat\s+(?:the\s+)?(?=(?:top|best|most|\d))|\b(?:are|is)\s+then\b|\bthen\b", re.I)
+
+def strip_instructions(q):
+    """'can you look up what the top 10 fastest cars are then make a list on excel sheet ...' -> 'top 10 fastest cars'."""
+    q = intents.fix_typos(q or "")
+    q = re.sub(r"\s*,?\s*(?:based on|according to)\s+(?:the\s+)?(?:most\s+)?(?:recent|latest|current|reliable|official)?\s*(?:rankings?|reports?|sources?|data|lists?)\b(?:\s+(?:or|and)\s+\w+)?", " ", q, flags=re.I)
+    q = re.sub(_LEAD_RE, "", q.strip())
+    prev = None
+    while prev != q:
+        prev = q; q = INSTR_RE.sub(" ", q)
+    q = re.sub(r"\s*[.,;]+\s*", " ", q)
+    q = re.sub(r"\b(?:are|is)\s*$", "", re.sub(r"\s+", " ", q).strip(" .,;?!"), flags=re.I)
+    q = re.sub(r"^(?:(?:and|of|the|about|listing|list|on|a|an|it|them)\s+)+", "", q, flags=re.I)
+    q = re.sub(r"\s+(?:and|of|on|a|an|it|them|with|in|to|plus)$", "", q, flags=re.I)
+    q = re.sub(r"\s*[.,;]+\s*", " ", q)
+    q = re.sub(r"\s+(?:and|of|on|a|an|it|them|with|in|to|plus)$", "", q.strip(), flags=re.I)
+    return re.sub(r"\s+", " ", q).strip(" .,;?!")
+
+_LEAD_RE = re.compile(r"^(?:(?:hey|hi|ok|okay|please|so|can you|could you|would you|will you|pls|i need you to|i want you to)\s+)+", re.I)
 
 def rule_plan(task):
     """Plan from code only (fast path, and fallback if the model fails). 'sure' = unambiguous, no model call needed."""
@@ -155,6 +187,9 @@ def validate(p, task):
     if p.get("query") and not (RECENT_RE.search(t) or re.search(r"\b(top|most|best|richest|biggest|largest|rank\w*|20\d\d)\b", t, re.I)):
         p["query"] = re.sub(r"\s*\b20\d\d\b\s*$", "", p["query"]).strip()
     p["query"] = re.sub(r"^(?:of|the|about|listing)\s+(?=\w)", "", str(p.get("query") or "")).strip()
+    if p["intent"] == "web_research_to_files" and p["query"]:
+        cq = strip_instructions(p["query"])
+        if len(cq.split()) >= 2: p["query"] = cq
     p["source"] = p.get("source", "model"); p.pop("sure", None)
     return p
 

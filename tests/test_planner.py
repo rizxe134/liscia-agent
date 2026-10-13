@@ -131,3 +131,48 @@ class VisionBlocklist(unittest.TestCase):
         self.assertIsNone(safety.vision_block({"action": "hotkey", "keys": ["ctrl", "c"]}, "copy"))
 
 if __name__ == "__main__": unittest.main()
+
+
+CARS = "can you look up what the top 10 fastest cars are then make make a list on exacel hseet as well as a report on word with an addtion of a small power point of it"
+
+class V131ChatVsTask(unittest.TestCase):
+    def setUp(self):
+        import core; self.core = core
+    def test_router_cases(self):
+        client = mock.MagicMock(); client.text_chat.return_value = '{"type":"chat"}'
+        tasks = [CARS, "make a powerpoint about the 5 largest oceans", "put the top 5 phones in a pwerpoint",
+                 "search for cheap flights to paris", "find the best laptops of 2026 and save them to an exel file",
+                 "look up the 10 tallest buildings and make a wrod doc", "create a slide deck of the top 5 cities by population",
+                 "open youtube and play lofi"]
+        for m in tasks:
+            kind, out = self.core.route(client, m)
+            self.assertEqual(kind, "task", m); self.assertEqual(out, m)
+        for m in ["hi how are you", "what is linear algebra", "thanks!", "tell me a joke", "how do I make an excel chart"]:
+            kind, _ = self.core.route(client, m)
+            self.assertEqual(kind, "chat", m)
+    def test_chat_prompt_says_it_can(self):
+        self.assertIn("CAN", self.core.CHAT_SYSTEM); self.assertIn("PowerPoint", self.core.CHAT_SYSTEM)
+    def test_cars_plan(self):
+        p = planner.plan(model('{"intent":"desktop","query":"x","outputs":[]}'), CARS)
+        self.assertEqual(p["intent"], "web_research_to_files"); self.assertEqual(sorted(p["outputs"]), ["docx", "pptx", "xlsx"])
+        self.assertEqual(p["count"], 10); self.assertEqual(p["query"], "top 10 fastest cars")
+    def test_typo_outputs(self):
+        for t, k in [("exacel", "xlsx"), ("exel", "xlsx"), ("wrod", "docx"), ("power point", "pptx"), ("pwerpoint", "pptx"),
+                     ("ppt", "pptx"), ("slides", "pptx"), ("deck", "pptx"), ("presentation", "pptx"), ("hseet", "xlsx")]:
+            self.assertIn(k, planner.file_outputs(f"top 5 cars in a {t}"), t)
+    def test_query_cleaning(self):
+        self.assertEqual(planner.strip_instructions("Open Microsoft Excel and create a new sheet. List the top 10 most powerful militaries"), "top 10 most powerful militaries")
+
+class V131Files(unittest.TestCase):
+    def test_pptx_and_report(self):
+        import tempfile, docmaker
+        from pptx import Presentation
+        from docx import Document
+        d = tempfile.mkdtemp(); rows = [[str(i), f"Car {i}", f"{300 + i} mph"] for i in range(1, 11)]
+        p = docmaker.make("pptx", "Top 10 Fastest Cars", "Summary text", ["Rank", "Car", "Top speed"], rows, source="https://x.test", folder=d)
+        slides = Presentation(p).slides
+        self.assertEqual(len(slides), 1 + 1 + 2 + 1)  # title, summary, 10 rows / 6 per slide, source
+        rep = {"intro": "Intro.", "items": [{"name": f"Car {i}", "text": "Fast."} for i in range(1, 11)], "conclusion": "End."}
+        w = docmaker.make("docx", "Top 10 Fastest Cars", "S", ["Rank", "Car", "Top speed"], rows, folder=d, report=rep)
+        text = "\n".join(x.text for x in Document(w).paragraphs)
+        for s in ["Introduction", "Intro.", "Details", "Car 10", "Conclusion"]: self.assertIn(s, text)
