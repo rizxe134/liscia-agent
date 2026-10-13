@@ -16,7 +16,7 @@ agent:
   move_duration_s: 0.25
   runs_dir: runs
   max_history: 8             # previous actions (+ results) included in the prompt
-  preferred_browser: Safari  # used for URLs when no browser is in front / was used this session ("" = system default)
+  preferred_browser: Google Chrome  # used for URLs when no browser is in front / was used this session ("" = system default)
   plan: true                 # ask the model for a short plan before starting
   coord_mode: auto           # auto | pixels | norm1000 (auto = norm1000 for qwen3-vl)
   browser_dom: true          # macOS: read Safari/Chrome page elements (click by id, no vision needed)

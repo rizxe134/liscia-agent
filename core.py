@@ -130,13 +130,69 @@ class Agent:
             except Exception: pass
         return ex
 
-    def use_extension(self):
-        """Use the Chrome extension when it's connected and Chrome is the browser we're working in."""
-        if not self.cfg["agent"].get("chrome_extension", True): return False
+    def link(self):
         import extlink
-        link = self.ext or extlink.LINK
-        if not link.connected(): return False
-        return intents.current_browser() == "Google Chrome"
+        return self.ext or extlink.LINK
+
+    def use_extension(self, task=None):
+        """Route to the extension when it's connected and the task is a web task in Chrome
+        (the user didn't name another browser)."""
+        if not self.cfg["agent"].get("chrome_extension", True): return False
+        if not self.link().connected(): return False
+        named = intents.named_browser(task) if task is not None else intents.STATE.get("named")
+        if named and named != "Google Chrome": return False
+        return True if task is None else intents.is_web_task(task)
+
+    def live_tab(self):
+        """(url, title) of Chrome's active tab as reported by the extension, or None."""
+        try:
+            tabs = self.link().call("tabs", timeout=5) or []
+            t = next((t for t in tabs if t.get("active")), tabs[0] if tabs else None)
+            return (t.get("url", ""), t.get("title", "")) if t else None
+        except Exception:
+            return None
+
+    def focus_chrome(self):
+        if not IS_MAC: return
+        try:
+            import subprocess; subprocess.run(["open", "-a", "Google Chrome"], timeout=5, capture_output=True)
+        except Exception: pass
+
+    def fix_browser(self, act):
+        """Never switch to another browser unless the user named it: default web browser = Google Chrome."""
+        allowed = intents.STATE.get("named") or "Google Chrome"
+        a = dict(act)
+        if a.get("action") == "open_app":
+            app = intents.APP_NAMES.get(str(a.get("app", "")).lower().strip(), a.get("app"))
+            if app in intents.BROWSERS_SET and app != allowed: a["app"] = allowed
+        if a.get("action") in ("open_url", "web_search") and a.get("browser"):
+            b = intents.BROWSER_NAMES.get(str(a["browser"]).lower().strip(), a["browser"])
+            if b != allowed: a["browser"] = allowed
+            else: a["browser"] = b
+        return a
+
+    def run_via_extension(self, task, history, logf):
+        """Deterministic steps through the extension (navigate / YouTube search / first video), then webagent."""
+        import webagent
+        link = self.link(); intents.note_app("Google Chrome"); self.focus_chrome()
+        fixed, rest = intents.plan(task) if self.cfg["agent"].get("intents", True) else ([], task)
+        done = []
+        for act in fixed:
+            if self.kill.killed: return "stopped by user"
+            if act["action"] == "open_app":
+                if act["app"] in intents.BROWSERS_SET: done.append("open Google Chrome (done)"); continue
+                rest = " and ".join([f"open {act['app']}"] + ([rest] if rest else [])); raise NeedsVision("non-browser app in task")
+            if act["action"] == "open_url":
+                res = link.call("navigate", timeout=25, url=act["url"]) or {}
+                self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
+            elif act["action"] == "first_video":
+                time.sleep(1.0); res = link.call("first_video", timeout=20) or {}
+                self.log(f"[web] first video -> {(res.get('clicked') or '')[:60]}")
+            logf.write(json.dumps({"web_fast": act}) + "\n"); done.append(f"{act['action']} {act.get('url','')}".strip() + " (done)")
+        if fixed and not rest:
+            return "done: " + "; ".join(done)
+        history += [f"(already done) {d}" for d in done]
+        return webagent.run_web(self, rest or task, history, logf, link=link, max_steps=self.cfg["agent"].get("max_steps", 40))
 
     def wait_page_change(self, act, timeout=8.0):
         """Mark a sub-step done when the front tab's URL/title changes (AppleScript); else fixed wait."""
@@ -194,10 +250,22 @@ class Agent:
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
         prev_hash, last_idx, force_look = None, None, False
         bad_streak, last_bad = 0, None
+        opens = {}
         norm = uses_norm_coords(self.cfg)
         system = NORM_SYSTEM if norm else SYSTEM
         orig_task = task
         self.kill.start(); self.log(f"Task: {task}\nRun folder: {run_dir}\nAbort: Esc/F12, STOP, or slam mouse into a screen corner.")
+        intents.STATE["named"] = intents.named_browser(task)
+        # 0) web task + Chrome extension connected: do it all through the extension (no screenshots)
+        if self.use_extension(task):
+            try:
+                result = self.run_via_extension(task, history, logf)
+                self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+            except NeedsVision as e:
+                self.log(f"[web] handing over to screenshots: {e}")
+            except Exception as e:
+                self.log(f"[web] extension path failed ({e}); using screenshots")
+            history.append("(note) The Chrome extension is connected: Google Chrome IS open. Do not open another browser.")
         # 1) deterministic fast handling of common commands (open app / site, first video ...)
         if a_cfg.get("intents", True):
             fixed, rest = intents.plan(task)
@@ -234,16 +302,6 @@ class Agent:
             if fixed:
                 history += [f"(already done) {d}" for d in done_steps]
                 task = rest
-        # 2) Chrome + extension connected: drive the page through the extension (element ids, no screenshots)
-        if self.use_extension():
-            import webagent
-            try:
-                result = webagent.run_web(self, task, history, logf, max_steps=a_cfg.get("max_steps", 40))
-                self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
-            except NeedsVision as e:
-                self.log(f"[web] handing over to screenshots: {e}")
-            except Exception as e:
-                self.log(f"[web] extension path failed ({e}); using screenshots")
         plan = self.make_plan(task) if a_cfg.get("plan", True) else ""
         if plan: self.log("Plan:\n" + plan)
         try:
@@ -271,6 +329,12 @@ class Agent:
                           "Do not repeat an action that did not work; if the screen did not change, try something different.\n"
                           "What is the single next action? JSON only.")
                 notes = []
+                ext_live = self.link().connected() and self.cfg["agent"].get("chrome_extension", True)
+                if ext_live:
+                    tab = self.live_tab()
+                    if tab:
+                        prompt = (f"FACT: Google Chrome IS open and running (extension reports the active tab: {tab[1][:60]} | {tab[0][:100]}). "
+                                  "Do NOT say Chrome is not open; do NOT use open_app for a browser.\n") + prompt
                 snap = None
                 if self.dom and not force_look:
                     try: snap = self.dom.snapshot()
@@ -311,7 +375,17 @@ class Agent:
                     force_look = True; history.append(f"{step}: look (screenshot next)"); logf.write(json.dumps(entry) + "\n"); continue
                 if act["action"] == "done":
                     result = act.get("summary", "done"); logf.write(json.dumps(entry) + "\n"); break
+                act = self.fix_browser(act)
                 logged = {k: ("***" if k == "text" and act.get("sensitive") else v) for k, v in act.items() if k not in ("thought", "reason")}
+                if act["action"] in ("open_app", "open_url"):
+                    key = act["action"] + ":" + str(act.get("app") or act.get("url") or "").rstrip("/").lower()
+                    opens[key] = opens.get(key, 0) + 1
+                    if ext_live and act["action"] == "open_app" and act.get("app") == "Google Chrome" and opens[key] > 1:
+                        history.append(f"{step}: open_app Google Chrome -> SKIPPED: Chrome is already open")
+                        notes.append("Chrome is already open. Do something on the page instead."); logf.write(json.dumps(entry) + "\n"); continue
+                    if opens[key] > 2:
+                        result = f"stopped: kept re-opening {key.split(':',1)[1]} without progress"
+                        self.log(f"!! {result}"); entry["loop"] = 3; logf.write(json.dumps(entry) + "\n"); break
                 level = guard.check(act)
                 if level == 3:
                     result = f"stopped: stuck repeating the same action ({act['action']}) {guard.count} times"

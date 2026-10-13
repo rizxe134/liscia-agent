@@ -3,7 +3,7 @@ Also tracks the 'current browser' so URLs open in the app the user/agent is work
 import re, time
 import browser_dom
 
-STATE = {"browser": None, "app": None}  # persists across tasks/messages in this process
+STATE = {"browser": None, "app": None, "named": None}  # named = browser the user named in the current task  # persists across tasks/messages in this process
 
 BROWSER_NAMES = {"safari": "Safari", "chrome": "Google Chrome", "google chrome": "Google Chrome",
                  "firefox": "Firefox", "brave": "Brave Browser", "edge": "Microsoft Edge", "arc": "Arc"}
@@ -25,16 +25,18 @@ def note_app(app):
 
 def current_browser(frontmost=None):
     """Frontmost app if it's a browser, else the last browser we used/opened, else None (= system default)."""
+    if STATE.get("named"):
+        return STATE["named"]  # the user named a browser for this task
+    try:
+        import extlink
+        if extlink.LINK.connected(): return "Google Chrome"  # extension live -> Chrome is the web browser
+    except Exception: pass
     try: front = (frontmost or browser_dom.frontmost_app)()
     except Exception: front = None
     if front in BROWSERS_SET:
         STATE["browser"] = front; return front
     if STATE["browser"]:
         return STATE["browser"]
-    try:
-        import extlink
-        if extlink.LINK.connected(): return "Google Chrome"  # the extension is live -> work in Chrome
-    except Exception: pass
     if STATE.get("preferred"):
         return STATE["preferred"]
     try: recent = browser_dom.recent_browser()
@@ -64,6 +66,7 @@ def match(part):
             a = {"action": "open_url", "url": url}
             if browser: a["browser"] = browser
             return [a]
+    p = re.sub(r"\s+(?:in|on|using|with)\s+(?:google chrome|chrome|safari|firefox|brave|edge|arc)$", "", p)
     m = re.match(r"^(?:search|look up|find)\s+(?:on\s+)?youtube\s+(?:for\s+)?(.+)$", p) or \
         re.match(r"^youtube\s+search\s+(?:for\s+)?(.+)$", p)
     if m:
@@ -77,12 +80,33 @@ def match(part):
         return [{"action": "first_video"}]
     return None
 
+_BROWSER_RE = re.compile(r"\b(google chrome|chrome|safari|firefox|brave|microsoft edge|edge|arc)\b", re.I)
+WEB_RE = re.compile(r"\b(browser|website|web ?site|web|url|link|tab|page|search|google|youtube|video|chrome|online|"
+                    r"https?://|www\.|" + "|".join(re.escape(k) for k in SITES) + r")\b|\.(com|org|net|io)\b", re.I)
+
+def named_browser(task):
+    """Browser the user explicitly named in the task ("... in safari"), else None."""
+    m = _BROWSER_RE.search(task or "")
+    return BROWSER_NAMES.get(m.group(1).lower()) if m else None
+
+def is_web_task(task):
+    return bool(WEB_RE.search(task or ""))
+
+def _yt(q):
+    import urllib.parse
+    return "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(q.strip(" '\""))
+
 def plan(task):
     """Split a task into clauses. Returns (deterministic_actions, remaining_text or '')."""
     parts = [x for x in _SPLIT.split(task.strip()) if x and x.strip()]
     acts = []
     for i, part in enumerate(parts):
         got = match(part)
+        if got is None and acts and acts[-1].get("url", "").startswith("https://www.youtube.com"):
+            # "open youtube ... and search lofi"  -> search on YouTube
+            m = re.match(r"^(?:search|look up|find|type)\s+(?:up\s+)?(?:for\s+)?(.+?)(?:\s+(?:on|in)\s+(?:youtube|it|there))?$",
+                         re.sub(r"\s+(?:in|on|using)\s+(?:google chrome|chrome)$", "", _clean(part)))
+            if m: got = [dict(acts[-1], url=_yt(m.group(1)))]
         if got is None:
             return acts, " and ".join(parts[i:])
         acts += got

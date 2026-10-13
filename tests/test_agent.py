@@ -642,3 +642,88 @@ class AgentUsesExtension(ExtensionChannel):
         with mock.patch("intents.current_browser", return_value="Google Chrome"), mock.patch.object(extlink, "LINK", self.link):
             self.assertEqual(a.run("press the search button on the page"), "clicked search")
         client.chat.assert_not_called()  # no screenshots
+
+class V121WebRouting(ExtensionChannel):
+    """v1.2.1: web tasks go through the extension in Chrome; never Safari unless named; no vision hallucination loop."""
+    def _agent(self, client, cap=None):
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 6, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        self.execs = []
+        def mk(s):
+            ex = mock.MagicMock(); ex.execute.side_effect = self.execs.append; return ex
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=cap or (lambda: Image.new("RGB", (800, 600))), executor=mk, dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
+        return a
+    def test_open_youtube_in_chrome_and_search(self):
+        import extlink
+        client = mock.MagicMock()
+        a = self._agent(client)
+        with mock.patch.object(extlink, "LINK", self.link):
+            res = a.run("open youtube in chrome and search lofi music")
+        self.assertTrue(res.startswith("done"), res)
+        self.assertEqual(self.ext.url, "https://www.youtube.com/results?search_query=lofi+music")
+        client.chat.assert_not_called(); client.text_chat.assert_not_called(); self.assertEqual(self.execs, [])
+    def test_search_youtube_for(self):
+        import extlink
+        client = mock.MagicMock(); a = self._agent(client)
+        with mock.patch.object(extlink, "LINK", self.link):
+            res = a.run("search youtube for lofi music")
+        self.assertTrue(res.startswith("done"), res); self.assertIn("results?search_query=lofi+music", self.ext.url)
+        client.chat.assert_not_called()
+    def test_free_form_web_task_uses_webagent_not_vision(self):
+        import extlink
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"type","id":"1","text":"daft punk","press_enter":true}', '{"action":"done","summary":"searched"}']
+        a = self._agent(client)
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("intents.current_browser", return_value="Safari"):
+            self.assertEqual(a.run("go on the youtube page and look for daft punk songs"), "searched")
+        client.chat.assert_not_called(); self.assertIn("type", self.ext.calls)
+    def test_named_other_browser_skips_extension(self):
+        import extlink
+        a = self._agent(mock.MagicMock())
+        with mock.patch.object(extlink, "LINK", self.link):
+            self.assertFalse(a.use_extension("open youtube in safari"))
+            self.assertTrue(a.use_extension("open youtube in chrome"))
+            self.assertTrue(a.use_extension("search google for weather"))
+            self.assertFalse(a.use_extension("open notes"))
+    def test_never_switch_to_safari_unless_named(self):
+        a = self._agent(mock.MagicMock())
+        _intents.STATE["named"] = None
+        self.assertEqual(a.fix_browser({"action": "open_app", "app": "Safari"})["app"], "Google Chrome")
+        self.assertEqual(a.fix_browser({"action": "open_url", "url": "u", "browser": "Safari"})["browser"], "Google Chrome")
+        self.assertEqual(a.fix_browser({"action": "open_app", "app": "Notes"})["app"], "Notes")
+        _intents.STATE["named"] = "Safari"
+        self.assertEqual(a.fix_browser({"action": "open_app", "app": "Safari"})["app"], "Safari")
+        _intents.STATE["named"] = None
+    def test_current_browser_prefers_chrome_when_extension_live(self):
+        import extlink
+        _intents.STATE.update(named=None, browser="Safari")
+        with mock.patch.object(extlink, "LINK", self.link):
+            self.assertEqual(_intents.current_browser(frontmost=lambda: "Safari"), "Google Chrome")
+        _intents.STATE["browser"] = None
+    def test_vision_fallback_told_chrome_is_open_and_stops_open_loop(self):
+        import extlink
+        self.ext.loop_tabs = True
+        orig = self.ext.loop
+        client = mock.MagicMock()
+        client.chat.side_effect = ['{"thought":"Chrome is not open","action":"open_app","app":"Safari"}',
+                                   '{"thought":"Chrome is not open","action":"open_app","app":"Chrome"}',
+                                   '{"action":"open_url","url":"https://x.test/"}', '{"action":"open_url","url":"https://x.test/"}',
+                                   '{"action":"open_url","url":"https://x.test"}', '{"action":"done","summary":"no"}']
+        a = self._agent(client)
+        a.cfg["agent"]["max_steps"] = 6
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch.object(a, "live_tab", return_value=("https://www.youtube.com/", "YouTube")), \
+             mock.patch.object(a, "use_extension", return_value=False):
+            res = a.run("do the thing on screen")
+        self.assertIn("kept re-opening", res)
+        prompt = client.chat.call_args_list[0][0][1]
+        self.assertIn("Google Chrome IS open", prompt)
+        self.assertEqual(self.execs[0]["app"], "Google Chrome")  # Safari rewritten
+        self.assertFalse(any(e.get("app") == "Safari" for e in self.execs))
+    def test_plan_contextual_youtube_search(self):
+        acts, rest = _intents.plan("open youtube in chrome and search never gonna give you up")
+        self.assertEqual(rest, ""); self.assertIn("search_query=never+gonna+give+you+up", acts[-1]["url"])
+        acts, rest = _intents.plan("search youtube for lofi in chrome")
+        self.assertEqual(acts[0]["url"], "https://www.youtube.com/results?search_query=lofi")
+        self.assertEqual(_intents.named_browser("open youtube in Chrome"), "Google Chrome")
+        self.assertIsNone(_intents.named_browser("open youtube"))
