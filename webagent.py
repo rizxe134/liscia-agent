@@ -102,7 +102,15 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     from actions import is_risky
     link = link or extlink.LINK
     s_cfg = agent.cfg["safety"]; words = s_cfg.get("risky_words", [])
-    snap = link.call("snapshot")
+    try:
+        snap = link.call("snapshot")
+    except extlink.ExtError as e:
+        if "not connected" in str(e): raise
+        # active tab is chrome://, a new tab page, the extensions page ... -> open a real page first
+        import intents
+        site = next((u for k, u in intents.SITES.items() if re.search(r"\b" + re.escape(k) + r"\b", (task or "").lower())), "https://www.google.com")
+        agent.log(f"[web] can't read this tab ({str(e)[:60]}); opening {site}")
+        link.call("navigate", timeout=25, url=site); sleep(1.0); snap = link.call("snapshot")
     agent.log(f"[web] page: {snap.get('title','')[:60]} | {snap.get('url','')[:90]} ({len(snap.get('elements') or [])} elements)")
     from core import LoopGuard
     guard = LoopGuard(2, 3, 5); bad = 0; notes = []; scrolls = 0; no_change = 0

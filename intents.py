@@ -85,6 +85,7 @@ def match(part):
 
 _BROWSER_RE = re.compile(r"\b(google chrome|chrome|safari|firefox|brave|microsoft edge|edge|arc)\b", re.I)
 WEB_RE = re.compile(r"\b(browser|website|web ?site|web|url|link|tab|page|search|google|youtube|video|chrome|online|"
+                    r"click|claick|clik|play|watch|song|music|serach|seach|yt|"
                     r"https?://|www\.|" + "|".join(re.escape(k) for k in SITES) + r")\b|\.(com|org|net|io)\b", re.I)
 
 def named_browser(task):
@@ -93,7 +94,44 @@ def named_browser(task):
     return BROWSER_NAMES.get(m.group(1).lower()) if m else None
 
 def is_web_task(task):
-    return bool(WEB_RE.search(task or ""))
+    return bool(WEB_RE.search(fix_typos(task or "")))
+
+TYPOS = {"claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
+         "serach": "search", "seach": "search", "saerch": "search", "searh": "search", "sreach": "search", "serch": "search",
+         "youtueb": "youtube", "yotube": "youtube", "youtub": "youtube", "yt": "youtube", "youube": "youtube", "you tube": "youtube",
+         "plya": "play", "paly": "play", "pley": "play", "opne": "open", "oepn": "open", "vidoe": "video", "vedio": "video"}
+
+def fix_typos(text):
+    t = text
+    for bad, good in TYPOS.items():
+        t = re.sub(r"\b" + re.escape(bad) + r"\b", good, t, flags=re.I)
+    return t
+
+_STOP_END = r"(?=\s*(?:,|\.|;|\band\b|\bthen\b|\b(?:on|in)\s+youtube\b|\b(?:in|on|using)\s+(?:google\s+)?chrome\b|$))"
+_PLAY = re.compile(r"\b(?:play|click|watch|open (?:it|that|the (?:first |top )?(?:video|song|result))|put (?:it )?on|listen)\b", re.I)
+
+def youtube_request(task):
+    """Tolerant parse of 'can you open up youtube and on youtube can you search for the song X by Y and claick on to play the song'.
+    Returns (query, wants_play) or None."""
+    t = fix_typos(task or "")
+    if not re.search(r"\byoutube\b", t, re.I): return None
+    pat = (r"\b(?:search|look|find|type)(?:\s+(?:up|it\s+up))?(?:\s+(?:for|up))?(?:\s+(?:on\s+)?youtube)?(?:\s+for)?\s+"
+           r"(?:the\s+|a\s+)?(?:(?:song|video|music video|track|music|clip)\s+(?:called\s+|named\s+)?)?['\"]?(.+?)['\"]?" + _STOP_END)
+    m = re.search(pat, t, re.I)
+    if not m:  # "play X on youtube"
+        m = re.search(r"\b(?:play|watch|put on)\s+(?!(?:the\s+)?(?:very\s+)?(?:first|1st|top|it|that|this)\b)(?:the\s+)?(?:(?:song|video|track)\s+)?['\"]?(.+?)['\"]?" + _STOP_END, t, re.I)
+        if not m: return None
+        q = m.group(1).strip(); return (q, True) if q and q.lower() not in ("youtube", "it") else None
+    q = m.group(1).strip(" '\"")
+    if not q or q.lower() in ("youtube", "it", "something"): return None
+    after = t[m.end():]
+    return q, bool(_PLAY.search(after) or re.search(r"\b(?:play|listen to|watch)\b", t[:m.start()], re.I))
+
+def match_words(q):
+    """Words to look for in result titles (drops filler like 'by', 'the', 'song')."""
+    stop = {"by", "the", "a", "an", "song", "video", "official", "music", "ft", "feat"}
+    w = [x for x in re.findall(r"[\w']+", q.lower()) if x not in stop]
+    return " ".join(w) or q
 
 def _yt(q):
     import urllib.parse
@@ -101,6 +139,17 @@ def _yt(q):
 
 def plan(task):
     """Split a task into clauses. Returns (deterministic_actions, remaining_text or '')."""
+    yt = youtube_request(task)
+    if yt:  # whole-sentence YouTube search (+ play) - tolerant of filler and typos
+        q, play = yt; nb = named_browser(task)
+        a = {"action": "open_url", "url": _yt(q)}
+        if nb: a["browser"] = nb
+        if not play: return [a], ""
+        ft = fix_typos(task); first = re.search(r"\b(?:first|1st|top)\b", ft[ft.lower().find(q.lower()) + len(q):], re.I)
+        rest = ft[ft.lower().find(q.lower()) + len(q):]
+        tm = re.search(r"\b(?:click|play|watch)\s+(?:on\s+)?(?:the\s+)?(?!(?:it|that|this|to|on|the|first|1st|top|song|video|one)\b)(.+?)" + _STOP_END, rest, re.I)
+        target = tm.group(1).strip(" '\"") if tm else q
+        return [a, {"action": "first_video"} if first else {"action": "first_video", "match": match_words(target)}], ""
     parts = [x for x in _SPLIT.split(task.strip()) if x and x.strip()]
     acts = []
     for i, part in enumerate(parts):

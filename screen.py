@@ -42,3 +42,9 @@ def hash_diff(a, b, tol=12):
     """Fraction of thumbnail pixels that changed by more than tol."""
     if not a or not b or len(a) != len(b): return 1.0
     return sum(1 for x, y in zip(a, b) if abs(x - y) > tol) / len(a)
+
+def is_blank(img, spread=10):
+    """True when a screenshot is (almost) one flat colour - on macOS that means Screen Recording permission is missing."""
+    g = img.convert("L").resize((96, 60))
+    lo, hi = g.getextrema()
+    return hi - lo <= spread

@@ -270,9 +270,11 @@ class Agent:
                 result = self.run_via_extension(task, history, logf)
                 self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
             except NeedsVision as e:
-                self.log(f"[web] handing over to screenshots: {e}")
-            except Exception as e:
-                self.log(f"[web] extension path failed ({e}); using screenshots")
+                self.log(f"[web] handing over to screenshots: {e}"); logf.write(json.dumps({"web_handover": str(e)}) + "\n")
+            except Exception as e:  # don't fall into a blind screenshot loop for a web task - report the problem
+                result = f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})"
+                logf.write(json.dumps({"web_error": str(e)}) + "\n")
+                self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
             history.append("(note) The Chrome extension is connected: Google Chrome IS open. Do not open another browser.")
         # 1) deterministic fast handling of common commands (open app / site, first video ...)
         if a_cfg.get("intents", True):
@@ -320,6 +322,11 @@ class Agent:
                     if intents.goal_reached(orig_task, url):
                         result = f"done: goal reached ({url})"; break
                 raw_img = self.capture()
+                if a_cfg.get("blank_check", IS_MAC) and screen.is_blank(raw_img):
+                    result = ("stopped: the screenshots are blank, so Liscia Agent can't see the screen. Open System Settings > "
+                              "Privacy & Security > Screen Recording, turn Liscia Agent OFF and ON again (or remove it with - and add it back), "
+                              "then quit and reopen Liscia Agent.")
+                    self.log(f"!! {result}"); logf.write(json.dumps({"step": step, "blank_screenshot": True}) + "\n"); break
                 h = screen.image_hash(raw_img)
                 if last_idx is not None:  # annotate the previous action with its result
                     changed = screen.hash_diff(prev_hash, h) > a_cfg.get("change_threshold", 0.01)

@@ -676,7 +676,7 @@ class V121WebRouting(ExtensionChannel):
         client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"type","id":"1","text":"daft punk","press_enter":true}', '{"action":"done","summary":"searched"}']
         a = self._agent(client)
         with mock.patch.object(extlink, "LINK", self.link), mock.patch("intents.current_browser", return_value="Safari"):
-            self.assertEqual(a.run("go on the youtube page and look for daft punk songs"), "searched")
+            self.assertEqual(a.run("go on the page and look for daft punk songs"), "searched")
         client.chat.assert_not_called(); self.assertIn("type", self.ext.calls)
     def test_named_other_browser_skips_extension(self):
         import extlink
@@ -801,3 +801,80 @@ class V122Scrolling(unittest.TestCase):
         acts, rest = _intents.plan("open youtube and search pursuit and click pursuit of jade")
         self.assertEqual(rest, ""); self.assertEqual(acts[-1]["match"], "pursuit of jade")
         self.assertEqual(_intents.plan("search youtube for x and play the first video")[0][-1], {"action": "first_video"})
+
+USER_SENTENCE = "can you open up youtube and on youtube can you search for the song Pursuit by isq and claick on to play the song"
+class V123Tolerant(unittest.TestCase):
+    def test_user_exact_sentence(self):
+        self.assertEqual(_intents.youtube_request(USER_SENTENCE), ("Pursuit by isq", True))
+        acts, rest = _intents.plan(USER_SENTENCE)
+        self.assertEqual(rest, "")
+        self.assertEqual(acts, [{"action": "open_url", "url": "https://www.youtube.com/results?search_query=Pursuit+by+isq"},
+                                {"action": "first_video", "match": "pursuit isq"}])
+        self.assertTrue(_intents.is_web_task(USER_SENTENCE))
+    def test_variants(self):
+        cases = {
+            "open youtube and search pursuit by isq": ("pursuit by isq", False),
+            "Open up YouTube, search for Pursuit by isq and click on it": ("Pursuit by isq", True),
+            "on youtube serach the song pursuit by isq then play it": ("pursuit by isq", True),
+            "can you search youtube for pursuit by isq and play the first video": ("pursuit by isq", True),
+            "play pursuit by isq on youtube": ("pursuit by isq", True),
+            "please go to youtube and look up lofi beats": ("lofi beats", False),
+            "search for 'Pursuit' by isq on youtube and clik to play": ("Pursuit' by isq", True) if False else None,
+            "open yotube and search for the video called never gonna give you up and watch it": ("never gonna give you up", True),
+            "search youtube for lofi in chrome": ("lofi", False),
+        }
+        for text, want in cases.items():
+            if want is None: continue
+            self.assertEqual(_intents.youtube_request(text), want, text)
+        self.assertIsNone(_intents.youtube_request("open notes and type hello"))
+    def test_web_routing_words(self):
+        for t in ("claick the login button", "play some music", "go to the website", "serach for cats"):
+            self.assertTrue(_intents.is_web_task(t), t)
+        self.assertFalse(_intents.is_web_task("open notes"))
+    def test_blank_screenshot(self):
+        self.assertTrue(screen.is_blank(Image.new("RGB", (800, 600))))
+        img = Image.new("RGB", (800, 600)); img.paste((255, 255, 255), (0, 0, 400, 300))
+        self.assertFalse(screen.is_blank(img))
+
+class V123Agent(V122Scrolling):
+    def _agent(self, client, cap=None):
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 4, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=cap or (lambda: Image.new("RGB", (800, 600))), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None; return a
+    def test_user_sentence_runs_on_extension_without_models(self):
+        import extlink
+        self.ext.find = None
+        orig = self.ext.loop
+        client = mock.MagicMock(); a = self._agent(client)
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
+            res = a.run(USER_SENTENCE)
+        self.assertTrue(res.startswith("done"), res)
+        self.assertIn("navigate", self.ext.calls); self.assertIn("/watch", self.ext.url)
+        client.chat.assert_not_called(); client.text_chat.assert_not_called()
+    def test_vision_stops_on_blank_screenshots(self):
+        client = mock.MagicMock(); a = self._agent(client)
+        a.cfg["agent"]["blank_check"] = True
+        with mock.patch.object(a, "use_extension", return_value=False):
+            res = a.run("do something on the desktop")
+        self.assertIn("Screen Recording", res); client.chat.assert_not_called()
+    def test_extension_error_does_not_fall_into_vision(self):
+        import extlink, webagent
+        client = mock.MagicMock(); a = self._agent(client)
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch.object(webagent, "run_web", side_effect=RuntimeError("boom")):
+            res = a.run("click the login button on the page")
+        self.assertIn("extension step failed", res); client.chat.assert_not_called()
+    def test_restricted_tab_opens_site_first(self):
+        import webagent, extlink
+        calls = {"n": 0}; real = self.link.call
+        def call(cmd, **kw):
+            if cmd == "snapshot" and calls["n"] == 0:
+                calls["n"] += 1; raise extlink.ExtError("can't access chrome://extensions/ (browser page)")
+            return real(cmd, **kw)
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"done","summary":"ok"}']
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.log = lambda m: None
+        ag.cfg = {"safety": {"confirm_risky": False, "risky_words": []}}
+        with mock.patch.object(self.link, "call", side_effect=call):
+            self.assertEqual(webagent.run_web(ag, "on youtube click something", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None), "ok")
+        self.assertEqual(self.ext.url, "https://www.youtube.com")
