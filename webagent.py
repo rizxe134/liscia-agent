@@ -69,13 +69,38 @@ def today():
     return datetime.date.today().strftime("%A %B %d, %Y")
 
 def is_404(snap):
-    t = ((snap.get("title") or "") + " " + (snap.get("text") or "")[:300]).lower()
-    return bool(re.search(r"\b404\b|page not found|not found \(|this page (?:isn't|is not) available|page (?:doesn't|does not) exist", t))
+    """Only a real HTTP 404 (status reported by the extension) or an unmistakable 404 title - never page body text."""
+    st = snap.get("status") or snap.get("http_status")
+    if st is not None:
+        try: return int(st) == 404
+        except (TypeError, ValueError): pass
+    t = (snap.get("title") or "").strip().lower()
+    return bool(re.search(r"(^|[\s|:\-])404([\s|:\-]|$)", t)) or t in ("not found", "page not found", "404 not found", "error 404")
+
+RISKY_WEB = re.compile(r"\b(sign ?up|register|create (?:an |your )?account|subscribe|subscription|start (?:your )?(?:free )?trial|free trial|"
+                       r"billing|payment|pay|purchase|buy|checkout|check out|order|upgrade|get (?:started|premium|plus)|join now|choose (?:a |your )?plan|"
+                       r"select (?:a |your )?plan|add to cart|place order|donate)\b", re.I)
+
+def money_click(act, el, task):
+    """Sign-up / billing / purchase / subscribe clicks need the user's OK unless the task asks for them."""
+    if act.get("action") not in ("click", "press") or not el: return False
+    lab = " ".join(str(el.get(k) or "") for k in ("label", "href"))
+    m = RISKY_WEB.search(lab)
+    return bool(m) and not RISKY_WEB.search(task or "")
 
 def main_text(link, max_chars=3500):
     """The page's main text, whitespace-collapsed and trimmed."""
     res = link.call("extract_text", timeout=20, max=max_chars * 2) or {}
     return " ".join((res.get("text") or "").split())[:max_chars]
+
+def host(u):
+    return re.sub(r"^www\.", "", re.sub(r"^https?://", "", u or "").split("/")[0].lower())
+
+def site_matches(url, want):
+    """Same site (ignoring www and paths like /welcome), or any non-Google page after a 'lucky' redirect."""
+    if "btnI=1" in (want or ""): return bool(url) and "google." not in host(url)
+    a, b = host(url), host(want)
+    return bool(a) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 def top_result(snap):
     """First real search result link (not Google's own pages, not footer junk)."""
@@ -155,6 +180,8 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     if info is None: info = intents.is_question(task)
     if info: max_steps = min(max_steps, agent.cfg.get("agent", {}).get("info_max_steps", 8))
     seen = {}; dead_urls = set(); read = ""
+    plain_open = None
+    if intents.is_plain_open(task): plain_open = intents.plan(task)[0][0]["url"]
     max_els = 40 if info else 70
     for step in range(1, max_steps + 1):
         if agent.kill.killed: return "stopped by user"
@@ -205,6 +232,11 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         if act["action"] in ("navigate", "new_tab") and act["url"].rstrip("/") in dead_urls:
             history.append(f"web{step}: navigate {act['url']} -> BLOCKED: that URL returned 404 before; don't invent URLs, use search results")
             logf.write(json.dumps(dict(entry, blocked="404")) + "\n"); continue
+        if money_click(act, el, task):
+            if not agent.confirm(f"Agent wants to click \"{el.get('label','')[:60]}\" (sign-up / billing) on {snap.get('url','')[:80]}. Allow?"):
+                history.append(f"web{step}: click \"{el.get('label','')[:50]}\" -> DENIED: sign-up/billing pages are off-limits for this task")
+                notes.append("Don't click sign-up, subscribe or billing buttons. If the task is done, reply done.")
+                logf.write(json.dumps(dict(entry, blocked="money")) + "\n"); continue
         if act["action"] == "click" and el and is_junk(el, task):
             history.append(f"web{step}: click \"{el['label']}\" -> BLOCKED: footer/legal link, not useful")
             logf.write(json.dumps(dict(entry, blocked="junk")) + "\n"); continue
@@ -266,6 +298,9 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
                 link.call("scroll", timeout=12, direction="down", wait_lazy=True); scrolls += 1; no_change = 0
                 snap = link.call("snapshot"); notes.append("Nothing changed 3 times; I scrolled down to show more of the page.")
         logf.write(json.dumps(entry) + "\n"); logf.flush()
+        if act["action"] in ("navigate", "new_tab") and plain_open and site_matches(snap.get("url"), plain_open) and not is_404(snap):
+            logf.write(json.dumps({"done": "site open"}) + "\n")
+            return f"done: opened {snap.get('title') or snap.get('url')}"
         if intents.goal_reached(task, snap.get("url")):
             return f"done: goal reached ({snap.get('url')})"
     if info:  # out of steps on a question: answer from whatever page we're on instead of nothing

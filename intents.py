@@ -11,7 +11,10 @@ APP_NAMES = {**BROWSER_NAMES, "notes": "Notes", "mail": "Mail", "messages": "Mes
              "music": "Music", "calendar": "Calendar", "terminal": "Terminal", "settings": "System Settings",
              "system settings": "System Settings", "spotify": "Spotify", "slack": "Slack", "vs code": "Visual Studio Code",
              "vscode": "Visual Studio Code", "photos": "Photos", "maps": "Maps", "app store": "App Store"}
-SITES = {"youtube": "https://www.youtube.com", "google": "https://www.google.com", "gmail": "https://mail.google.com",
+SITES = {"youtube": "https://www.youtube.com", "hulu": "https://www.hulu.com", "disney+": "https://www.disneyplus.com",
+         "disney plus": "https://www.disneyplus.com", "twitch": "https://www.twitch.tv", "tiktok": "https://www.tiktok.com",
+         "pinterest": "https://www.pinterest.com", "ebay": "https://www.ebay.com", "bing": "https://www.bing.com",
+         "outlook": "https://outlook.live.com", "drive": "https://drive.google.com", "maps": "https://maps.google.com", "google": "https://www.google.com", "gmail": "https://mail.google.com",
          "github": "https://github.com", "reddit": "https://www.reddit.com", "twitter": "https://x.com", "x": "https://x.com",
          "netflix": "https://www.netflix.com", "amazon": "https://www.amazon.com", "wikipedia": "https://www.wikipedia.org",
          "chatgpt": "https://chatgpt.com", "linkedin": "https://www.linkedin.com", "instagram": "https://www.instagram.com",
@@ -50,18 +53,47 @@ _SPLIT = re.compile(r"\s*(?:,\s*(?:and\s+)?then\s+|,\s*and\s+|\s+and\s+then\s+|\
 def _clean(s):
     s = re.sub(r"^" + _FILLER, "", s.strip().lower()); return s.strip(" .!?")
 
+GUESS_CHECK = True  # tests turn the network check off
+
+def site_alive(url, timeout=4.0):
+    import urllib.request
+    try:
+        req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as r: return r.status < 500
+    except Exception as e:
+        code = getattr(e, "code", None)
+        return code is not None and code < 500  # 403/405 from bot protection still means the site exists
+
+import functools
+@functools.lru_cache(maxsize=64)
+def guess_site(name):
+    """Unknown site name -> https://www.<name>.com if it answers, else Google's first result for the name."""
+    import urllib.parse
+    url = f"https://www.{name}.com"
+    if not GUESS_CHECK or site_alive(url): return url
+    return "https://www.google.com/search?btnI=1&q=" + urllib.parse.quote_plus(name)
+
+def is_plain_open(task):
+    """'open hulu in the browser' - a task that is finished as soon as the site is open."""
+    acts, rest = plan(task)
+    return not rest and len(acts) == 1 and acts[0]["action"] == "open_url" and "/search" not in acts[0]["url"] and "/results" not in acts[0]["url"]
+
 def match(part):
     """Return a list of actions for one clause, or None."""
     p = _clean(part)
     m = re.match(r"^(?:open|launch|start|switch to)\s+(?:the\s+)?(?:app\s+)?(.+?)(?:\s+app)?$", p)
     if m and m.group(1) in APP_NAMES:
         return [{"action": "open_app", "app": APP_NAMES[m.group(1)]}]
-    m = re.match(r"^(?:open|go to|visit|navigate to|load|bring up|search for|show me|take me to)\s+(?:the\s+)?(?:website\s+)?"
-                 r"([a-z0-9.\-]+?)(?:\s+(?:website|site|homepage|page|\.com))?(?:\s+(?:in|on|using)\s+([a-z ]+))?$", p)
+    m = re.match(r"^(?:open(?: up)?|go to|visit|navigate to|load|bring up|search for|show me|take me to|go on)\s+(?:the\s+)?(?:website\s+)?"
+                 r"([a-z0-9.\-]+?)(?:\s+(?:website|site|homepage|home page|page|\.com))?(?:\s+(?:in|on|using|with)\s+(?:the\s+|my\s+|a\s+)?(?:web\s+)?([a-z ]+?))?$", p)
     if m:
         name, br = m.group(1), m.group(2)
         browser = BROWSER_NAMES.get(br.strip()) if br else None
+        webby = bool(br and (browser or br.strip() in ("browser", "internet", "web"))) or bool(re.match(r"^(?:go to|visit|navigate to|take me to|go on)\b", p)) \
+            or bool(re.search(r"\b(?:website|site|homepage|home page)\b", p))
         url = SITES.get(name.replace(".com", "")) or (("https://" + name) if re.match(r"^[a-z0-9\-]+\.[a-z.]{2,}$", name) else None)
+        if not url and webby and name not in APP_NAMES and re.match(r"^[a-z0-9\-]{2,40}$", name):
+            url = guess_site(name)  # "open hulu in the browser" -> https://www.hulu.com (verified) or a lucky Google hit
         if url:
             a = {"action": "open_url", "url": url}
             if browser: a["browser"] = browser

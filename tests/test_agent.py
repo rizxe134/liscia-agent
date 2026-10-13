@@ -11,6 +11,7 @@ _actions.IS_MAC = False; _core.IS_MAC = False
 _REAL_FRONT, _REAL_RECENT = _intents.browser_dom.frontmost_app, _intents.browser_dom.recent_browser
 _intents.browser_dom.frontmost_app = lambda *a, **k: None
 _intents.browser_dom.recent_browser = lambda *a, **k: None
+_intents.GUESS_CHECK = False
 
 class Parse(unittest.TestCase):
     def test_click_in_noise(self):
@@ -1023,3 +1024,75 @@ class ExtensionZip(unittest.TestCase):
             self.assertEqual(json.loads(z.read("manifest.json"))["version"], "9.8.7")
             for f in ("background.js", "content.js", "sidepanel.html", "icon128.png"): self.assertIn(f, names)
             with self.assertRaises(SystemExit): m.build("1.2.5-beta", out_dir=d)
+
+class V126OpenSite(unittest.TestCase):
+    def test_plan_open_site_in_browser(self):
+        _intents.guess_site.cache_clear()
+        for t in ("open Hulu in the browser", "open hulu in my browser", "go to hulu", "open hulu in chrome", "can you open up hulu in the web browser"):
+            acts, rest = _intents.plan(t)
+            self.assertEqual((acts[0]["url"], rest), ("https://www.hulu.com", ""), t); self.assertEqual(len(acts), 1)
+            self.assertTrue(_intents.is_plain_open(t), t)
+        acts, _ = _intents.plan("go to crunchyroll"); self.assertEqual(acts[0]["url"], "https://www.crunchyroll.com")
+        self.assertEqual(_intents.plan("open notes")[0][0]["action"], "open_app")
+        self.assertEqual(_intents.plan("open calculator")[0], [])  # no browser cue -> no .com guess
+        self.assertFalse(_intents.is_plain_open("open youtube and search lofi"))
+    def test_guess_falls_back_to_lucky_google(self):
+        _intents.guess_site.cache_clear()
+        with mock.patch.object(_intents, "GUESS_CHECK", True), mock.patch.object(_intents, "site_alive", return_value=False):
+            self.assertIn("google.com/search?btnI=1&q=zzqqx", _intents.guess_site("zzqqx"))
+        _intents.guess_site.cache_clear()
+    def test_404_only_from_status_or_title(self):
+        import webagent
+        self.assertFalse(webagent.is_404({"title": "Sign in | Hulu", "text": "error 404 page not found somewhere in text"}))
+        self.assertTrue(webagent.is_404({"title": "Hulu", "status": 404}))
+        self.assertFalse(webagent.is_404({"title": "404 - fun facts", "status": 200}))
+        self.assertTrue(webagent.is_404({"title": "Page Not Found"})); self.assertTrue(webagent.is_404({"title": "Error 404 | Forbes"}))
+    def test_money_clicks(self):
+        import webagent
+        el = {"id": "5", "role": "link", "label": "Sign up for only Hulu", "href": "https://signup.hulu.com/plans"}
+        self.assertTrue(webagent.money_click({"action": "click", "id": "5"}, el, "open hulu"))
+        self.assertFalse(webagent.money_click({"action": "click", "id": "5"}, el, "sign up for hulu"))
+        self.assertFalse(webagent.money_click({"action": "click", "id": "5"}, {"label": "Log In"}, "open hulu"))
+        self.assertTrue(webagent.site_matches("https://www.hulu.com/welcome", "https://www.hulu.com"))
+        self.assertFalse(webagent.site_matches("https://www.google.com/x", "https://www.hulu.com"))
+
+class HuluFake(FakeExt):
+    def snap(self):
+        return {"url": self.url, "title": "Hulu", "elements": [{"id": "5", "role": "link", "label": "Sign up for only Hulu", "href": "https://signup.hulu.com/plans"}],
+                "dialogs": [], "text": "", "scroll": [0, 100], "status": 200}
+    def loop(self):
+        while not self.stop:
+            for c in self.link.poll({"version": "test"}, hold=0.05):
+                self.calls.append(c["cmd"]); a = c["args"]; r = {"id": c["id"], "ok": True, "result": {}}
+                if c["cmd"] == "snapshot": r["result"] = self.snap()
+                elif c["cmd"] == "navigate": self.url = a["url"] if a["url"] != "https://www.hulu.com" else "https://www.hulu.com/welcome"
+                self.link.result(r)
+
+class V126Agent(unittest.TestCase):
+    def setUp(self):
+        import extlink, time
+        self.link = extlink.ExtensionLink(); self.ext = HuluFake(self.link); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            time.sleep(0.01)
+    def test_open_hulu_one_step_and_stop(self):
+        import extlink
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 10, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": True, "kill_keys": []}}
+        client = mock.MagicMock()
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
+            res = a.run("open Hulu in the browser")
+        self.assertTrue(res.startswith("done"), res)
+        self.assertEqual([c for c in self.ext.calls if c != "snapshot"], ["navigate"])
+        client.text_chat.assert_not_called(); client.chat.assert_not_called()
+    def test_webagent_asks_before_signup_and_stops_after_open(self):
+        import webagent
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"click","id":"5"}', '{"action":"navigate","url":"https://www.hulu.com"}']
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.log = lambda m: None; ag.confirm.return_value = False
+        ag.cfg = {"safety": {"confirm_risky": True, "risky_words": []}, "agent": {}}
+        res = webagent.run_web(ag, "open Hulu in the browser", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
+        self.assertTrue(res.startswith("done: opened"), res); ag.confirm.assert_called_once()
+        self.assertNotIn("click", self.ext.calls)

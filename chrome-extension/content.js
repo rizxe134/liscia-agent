@@ -76,7 +76,7 @@ L.snapshot = (opts = {}) => {
   }
   return {url: location.href, title: document.title, elements: out, dialogs: dialogs(), text: summary(opts.text || 1200),
     scroll: [Math.round(scrollY), Math.round(document.documentElement.scrollHeight - innerHeight)],
-    viewport: [innerWidth, innerHeight], ready: document.readyState};
+    viewport: [innerWidth, innerHeight], ready: document.readyState, status: httpStatus()};
 };
 function find(id) {
   const e = document.querySelector(`[data-liscia-id="${CSS.escape(String(id))}"]`);
@@ -102,6 +102,16 @@ L.prepare = async (id) => {  // scroll into view + highlight; returns viewport c
   const e = find(id); e.scrollIntoView({block: "center", inline: "center"}); await sleep(120); flash(e); await sleep(350);
   const [x, y] = center(e); return {x, y, label: label(e)};
 };
+const CLICKABLE = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[onclick]';
+function activate(t, x, y) {
+  // SVG icons and other non-HTMLElement targets have no .click(): use the closest clickable ancestor, else a synthetic click event
+  const c = (t && t.closest && t.closest(CLICKABLE)) || t;
+  if (c && typeof c.click === "function") { c.click(); return; }
+  (t || document.body).dispatchEvent(new MouseEvent("click", {bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0}));
+}
+function httpStatus() {
+  try { const n = performance.getEntriesByType("navigation")[0]; return n && n.responseStatus ? n.responseStatus : null; } catch (e) { return null; }
+}
 L.click = async (id) => {
   const e = find(id), [x, y] = center(e);
   const target = document.elementFromPoint(x, y) || e;
@@ -109,7 +119,7 @@ L.click = async (id) => {
   for (const t of ["pointerover", "mouseover", "pointerdown", "mousedown"]) mouse(hit, t, x, y);
   if (e.focus) e.focus({preventScroll: true});
   for (const t of ["pointerup", "mouseup"]) mouse(hit, t, x, y);
-  hit.click();
+  activate(hit, x, y);
   return {clicked: label(e), covered: hit !== target};
 };
 function setValue(e, v) {
