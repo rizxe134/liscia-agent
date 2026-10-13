@@ -4,7 +4,7 @@ Safari / Google Chrome via AppleScript + JavaScript, and click them by id.
 One-time setup (else we silently fall back to screenshots):
   Safari: Settings > Advanced > "Show features for web developers", then Develop > "Allow JavaScript from Apple Events"
   Chrome: View > Developer > "Allow JavaScript from Apple Events"
-  macOS will also ask to let PC Agent/Python control Safari/Chrome (Automation) - click OK."""
+  macOS will also ask to let Liscia Agent/Python control Safari/Chrome (Automation) - click OK."""
 import json, re, subprocess, sys
 
 BROWSERS = {"Safari": "safari", "Google Chrome": "chrome", "Brave Browser": "chrome",

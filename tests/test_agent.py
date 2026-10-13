@@ -487,8 +487,8 @@ class PanelBridge(unittest.TestCase):
 class Packaging(unittest.TestCase):
     def test_user_data_dirs(self):
         import paths
-        self.assertEqual(paths.user_data_dir("darwin", {}, "/Users/u"), os.path.join("/Users/u", "Library", "Application Support", "PC Agent"))
-        self.assertTrue(paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U").endswith("PC Agent"))
+        self.assertEqual(paths.user_data_dir("darwin", {}, "/Users/u"), os.path.join("/Users/u", "Library", "Application Support", "Liscia Agent"))
+        self.assertTrue(paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U").endswith("Liscia Agent"))
         self.assertIn("C:\\\\R", paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U"))
     def test_frozen_config_copied_to_data_dir(self):
         import paths, tempfile
@@ -521,3 +521,18 @@ class Packaging(unittest.TestCase):
         self.assertTrue(any(k == "status" and "50%" in v for k, v in msgs))
         with mock.patch.object(llm.OllamaClient, "check", return_value=None), mock.patch("llm.start_ollama", return_value=False):
             self.assertFalse(ui.ChatApp.setup_models(fake, ask=lambda m: True, sleep=lambda s: None))
+
+class Rename(unittest.TestCase):
+    def test_migrates_pc_agent_data(self):
+        import paths, tempfile
+        root = tempfile.mkdtemp(); old = os.path.join(root, "PC Agent"); os.makedirs(old)
+        open(os.path.join(old, "token"), "w").write("x" * 40); open(os.path.join(old, "config.yaml"), "w").write("a: 1\n")
+        new = os.path.join(root, "Liscia Agent")
+        with mock.patch.object(paths, "frozen", return_value=True), mock.patch.object(paths, "user_data_dir", return_value=new):
+            self.assertEqual(paths.data_dir(), new)
+        self.assertEqual(open(os.path.join(new, "token")).read(), "x" * 40)
+        self.assertTrue(os.path.exists(os.path.join(new, "config.yaml")))
+        self.assertFalse(paths.migrate_old_data(new, old))  # only once
+    def test_extension_manifest(self):
+        m = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chrome-extension", "manifest.json")))
+        self.assertIn("Liscia", m["name"]); self.assertEqual(set(m["icons"]), {"16", "32", "48", "128"})

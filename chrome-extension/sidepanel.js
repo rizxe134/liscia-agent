@@ -55,7 +55,7 @@ function connect() {
   if (es) es.close();
   es = new EventSource(`${BASE}/events?token=${encodeURIComponent(token)}`);
   es.onmessage = onEvent;
-  es.onerror = () => { $("conn").textContent = "[offline - is PC Agent open?]"; es.close();
+  es.onerror = () => { $("conn").textContent = "[offline - is Liscia Agent open?]"; es.close();
     fetch(`${BASE}/health`, {headers: {"X-PCA-Token": token}}).then(r => { if (r.status === 401) showSetup("Token rejected."); }).catch(() => {});
     setTimeout(connect, Math.min(1000 * 2 ** retry++, 15000)); };
 }
@@ -67,10 +67,10 @@ $("f").onsubmit = async (e) => {
   e.preventDefault(); const text = $("msg").value.trim(); if (!text) return;
   $("msg").value = ""; line(text, "user");
   try { const r = await post("/chat", {text}); if (!r.accepted) line("busy - press STOP first, or wait.", "warn"); }
-  catch (err) { line("can't reach PC Agent: " + err.message, "err"); }
+  catch (err) { line("can't reach Liscia Agent: " + err.message, "err"); }
 };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && busy) post("/stop"); });
 chrome.storage.local.get("token").then(({token: t}) => {
-  line("PC Agent side panel. Chat, or tell it to do things in the browser. Esc / STOP to halt.", "dim");
+  line("Liscia Agent side panel. Chat, or tell it to do things in the browser. Esc / STOP to halt.", "dim");
   if (t) { token = t; connect(); } else showSetup();
 });

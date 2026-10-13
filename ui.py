@@ -39,9 +39,9 @@ class ChatApp:
         self.history = []; self.spin_i = 0; self.status_text = "READY"; self.live = ""
         r = self.root = root or tk.Tk()
         pick_font(r)
-        r.title("LOCAL PC AGENT"); r.configure(bg=BG); r.geometry("760x520")
+        r.title("LISCIA AGENT"); r.configure(bg=BG); r.geometry("760x520")
         top = tk.Frame(r, bg=BG); top.pack(fill="x", padx=8, pady=(6, 0))
-        tk.Label(top, text=f"> LOCAL PC AGENT // {cfg['ollama']['model']}", fg=FG, bg=BG, font=FONT + ("bold",)).pack(side="left")
+        tk.Label(top, text=f"> LISCIA AGENT // {cfg['ollama']['model']}", fg=FG, bg=BG, font=FONT + ("bold",)).pack(side="left")
         self.stop_btn = tk.Button(top, text="[ STOP ]", command=self.stop, fg=WARN, bg=BG, font=FONT,
                                   relief="flat", activebackground=WARN, activeforeground=BG, state="disabled")
         self.stop_btn.pack(side="right")
@@ -83,12 +83,12 @@ class ChatApp:
                     sleep(1); installed = client.check()
                     if installed is not None: break
         if installed is None:
-            self.q.put(("warn", "Ollama not found. Install it from https://ollama.com/download, open it, then restart PC Agent."))
+            self.q.put(("warn", "Ollama not found. Install it from https://ollama.com/download, open it, then restart Liscia Agent."))
             return False
         need = llm.missing_models(installed, [o.get("model"), o.get("text_model")])
         if not need: return True
-        if not ask("PC Agent needs these local models (a few GB, one-time download):\n  " + "\n  ".join(need) + "\n\nDownload them now?"):
-            self.q.put(("warn", "Models missing: " + ", ".join(need) + ". Run `ollama pull <name>` or restart PC Agent to be asked again."))
+        if not ask("Liscia Agent needs these local models (a few GB, one-time download):\n  " + "\n  ".join(need) + "\n\nDownload them now?"):
+            self.q.put(("warn", "Models missing: " + ", ".join(need) + ". Run `ollama pull <name>` or restart Liscia Agent to be asked again."))
             return False
         for name in need:
             self.q.put(("sys", f"downloading {name} ...")); self.q.put(("busy", True)); last = [-10]

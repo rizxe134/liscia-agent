@@ -1,9 +1,9 @@
 <!doctype html>
 <html><head><meta charset="utf-8"><link rel="stylesheet" href="sidepanel.css"></head>
 <body>
-  <header><span id="title">&gt;_ PC AGENT</span><span id="conn" class="dim">[offline]</span></header>
+  <header><span id="title">&gt;_ LISCIA AGENT</span><span id="conn" class="dim">[offline]</span></header>
   <section id="setup" hidden>
-    <p>Paste the token from <code>~/.pc-agent/token</code> on your Mac<br>(Terminal: <code>cat ~/.pc-agent/token | pbcopy</code>)</p>
+    <p>Paste the token from <code>~/Library/Application Support/Liscia Agent/token</code> (Mac app) or <code>%APPDATA%\Liscia Agent\token</code> (Windows)</p>
     <input id="tok" type="password" placeholder="token" autocomplete="off"><button id="save">CONNECT</button>
   </section>
   <main id="log"></main>
