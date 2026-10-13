@@ -8,3 +8,6 @@ pyperclip>=1.8
 python-docx>=1.1
 python-pptx>=0.6.21
 openpyxl>=3.1
+uiautomation>=2.0.18; sys_platform == "win32"
+comtypes>=1.2; sys_platform == "win32"
+psutil>=5.9

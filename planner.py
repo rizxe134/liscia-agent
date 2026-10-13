@@ -3,7 +3,7 @@ Regex fast paths (intents.py) are used as hints and as the fallback when the mod
 import datetime, json, re
 import intents
 
-INTENTS = ("web_answer", "open_site", "media_play", "web_research_to_files", "web_interact", "desktop")
+INTENTS = ("web_answer", "open_site", "media_play", "web_research_to_files", "web_interact", "desktop_app")
 FILE_KINDS = ("docx", "xlsx", "pptx", "txt")
 
 SCHEMA = {"type": "object", "properties": {
@@ -11,7 +11,7 @@ SCHEMA = {"type": "object", "properties": {
     "query": {"type": "string"}, "site": {"type": "string"},
     "outputs": {"type": "array", "items": {"type": "string", "enum": list(FILE_KINDS)}},
     "columns": {"type": "array", "items": {"type": "string"}},
-    "count": {"type": "integer"}, "title": {"type": "string"}},
+    "count": {"type": "integer"}, "title": {"type": "string"}, "app": {"type": "string"}},
     "required": ["intent", "query", "outputs"]}
 
 PROMPT = """You route requests for a computer assistant. Today is {today}. Reply with JSON only.
@@ -29,7 +29,8 @@ Examples:
 "who won the last world cup" -> {{"intent":"web_answer","query":"who won the last world cup","outputs":[]}}
 "go to netflix" -> {{"intent":"open_site","query":"","site":"netflix","outputs":[]}}
 "make a word doc and a spreadsheet of the 5 biggest companies" -> {{"intent":"web_research_to_files","query":"5 biggest companies {year}","outputs":["docx","xlsx"],"count":5,"title":"5 Biggest Companies"}}
-"open calculator and add 2+2" -> {{"intent":"desktop","query":"","outputs":[]}}
+"open calculator and add 2+2" -> {{"intent":"desktop_app","app":"Calculator","query":"","outputs":[]}}
+"launch photoshop" -> {{"intent":"desktop_app","app":"Photoshop","query":"","outputs":[]}}
 "go on the page and look for jazz albums" -> {{"intent":"web_interact","query":"jazz albums","outputs":[]}}
 (No Word/Excel/document/sheet/text file mentioned -> never web_research_to_files.)"""
 
@@ -114,6 +115,24 @@ def rule_plan(task):
     """Plan from code only (fast path, and fallback if the model fails). 'sure' = unambiguous, no model call needed."""
     p = _rule_plan(task); return p
 
+APP_OPEN_RE = re.compile(r"^(?:(?:hey|ok|okay|please|so|can you|could you|would you|will you|pls|i want to|i need to)\s+)*"
+                         r"(?:open|launch|start|run|use|switch to|bring up|fire up|load)\s+(?:up\s+)?(?:the\s+|my\s+)?(?:app\s+|application\s+|program\s+)?"
+                         r"([\w.+#'&-]+(?:\s+(?!and\b|then\b|to\b|on\b|in\b|app\b|application\b|program\b|for\b|with\b)[\w.+#'&-]+){0,3}?)"
+                         r"(?:\s+(?:app|application|program))?\s*(?:$|[,.;]|\s+(?:and|then|to|on|in|for|with)\b)", re.I)
+
+def target_app(task):
+    """'open notepad and type hello' -> 'notepad'; None for websites/browsers/files."""
+    t = intents.fix_typos(task or "").strip()
+    m = APP_OPEN_RE.match(t)
+    if not m: return None
+    name = m.group(1).strip(" .,'")
+    low = name.lower()
+    if re.search(r"\.(com|org|net|io|tv|co|gov|edu)\b|https?:|www\.", low): return None
+    if low in ("it", "that", "this", "them", "a", "an", "new", "google", "youtube", "a new tab", "tab", "website", "site") or low.startswith(("a ", "the web")): return None
+    if low in intents.SITES and low not in ("spotify", "slack", "discord", "zoom", "teams", "whatsapp", "notion", "steam"): return None
+    if intents.named_browser(low) or low in ("browser", "chrome", "safari", "firefox", "edge", "google chrome"): return None
+    return name
+
 def _rule_plan(task):
     t = intents.fix_typos(task or "")
     outs = file_outputs(t)
@@ -138,16 +157,21 @@ def _rule_plan(task):
         return {"intent": "open_site", "query": "", "site": acts[0]["url"], "outputs": [], "count": 0, "sure": True}
     if acts and not rest:  # fully deterministic (e.g. "open safari and open youtube and click the first video")
         browser = any(a["action"] == "open_app" and a["app"] in intents.BROWSERS_SET for a in acts) or any(a["action"] != "open_app" for a in acts)
-        return {"intent": "web_interact" if browser else "desktop", "query": "", "site": "", "outputs": [], "count": 0, "sure": True}
+        apps = [a["app"] for a in acts if a["action"] == "open_app" and a["app"] not in intents.BROWSERS_SET]
+        return {"intent": "web_interact" if browser else "desktop_app", "app": apps[0] if apps and not browser else "", "query": "", "site": "", "outputs": [], "count": 0, "sure": True}
+    app = target_app(t)
+    if app and not re.search(r"\byoutube\b", t, re.I):
+        sure = bool(re.match(r"^\W*(?:\w+\W+){0,2}" + re.escape(app) + r"(\s+app)?\W*$", re.sub(_LEAD_RE, "", t), re.I))  # just "open X"
+        return {"intent": "desktop_app", "app": app, "query": "", "site": "", "outputs": [], "count": 0, "sure": sure}
     if acts and acts[0]["action"] == "open_app" and acts[0]["app"] not in intents.BROWSERS_SET and not WEBBY_RE.search(rest or ""):
-        return {"intent": "desktop", "query": "", "site": "", "outputs": [], "count": 0}
+        return {"intent": "desktop_app", "app": acts[0]["app"], "query": "", "site": "", "outputs": [], "count": 0}
     if DESKTOP_APP_RE.search(t) and not WEBBY_RE.search(t) and not intents.is_web_task(t):
-        return {"intent": "desktop", "query": "", "site": "", "outputs": [], "count": 0}
+        return {"intent": "desktop_app", "query": "", "site": "", "outputs": [], "count": 0}
     if intents.is_question(t):
         return {"intent": "web_answer", "query": with_year(intents.google_request(t) or clean_query(t), t), "site": "", "outputs": [], "count": count}
     if intents.is_web_task(t) or WEBBY_RE.search(t):
         return {"intent": "web_interact", "query": "", "site": "", "outputs": [], "count": count}
-    return {"intent": "desktop", "query": "", "site": "", "outputs": [], "count": 0}
+    return {"intent": "desktop_app", "query": "", "site": "", "outputs": [], "count": 0}
 
 def validate(p, task):
     """Code rules that override the model where the text is unambiguous."""
@@ -162,15 +186,21 @@ def validate(p, task):
     if text_outs and needs_facts(t):
         p["intent"] = "web_research_to_files"; outs = list(dict.fromkeys(outs + text_outs))
     if p["intent"] == "web_research_to_files" and not outs:
-        p["intent"] = rule["intent"] if rule["intent"] not in ("web_research_to_files", "desktop") else "web_answer"
+        p["intent"] = rule["intent"] if rule["intent"] not in ("web_research_to_files", "desktop_app") else "web_answer"
     p["outputs"] = outs if p["intent"] == "web_research_to_files" else []
     # strong regex hints win for media / plain open / desktop-only
     if rule["intent"] in ("media_play", "open_site") and p["intent"] not in ("web_research_to_files",):
         p = dict(p, intent=rule["intent"], site=rule.get("site") or p.get("site", ""), query=rule.get("query") or p.get("query", ""))
-    if p["intent"] == "desktop" and (needs_facts(t) and WEBBY_RE.search(t) or intents.is_web_task(t)) and not DESKTOP_APP_RE.search(t):
-        p["intent"] = rule["intent"] if rule["intent"] != "desktop" else "web_interact"
-    if p["intent"] != "desktop" and rule["intent"] == "desktop" and DESKTOP_APP_RE.search(t) and not WEBBY_RE.search(t):
-        p["intent"] = "desktop"
+    if p["intent"] == "desktop_app" and not rule.get("app") and (needs_facts(t) and WEBBY_RE.search(t) or intents.is_web_task(t)) and not DESKTOP_APP_RE.search(t):
+        p["intent"] = rule["intent"] if rule["intent"] != "desktop_app" else "web_interact"
+    if p["intent"] not in ("desktop_app", "web_research_to_files") and rule["intent"] == "desktop_app" and rule.get("app"):
+        p["intent"] = "desktop_app"  # an explicitly named installed app wins
+    if p["intent"] != "desktop_app" and rule["intent"] == "desktop_app" and DESKTOP_APP_RE.search(t) and not WEBBY_RE.search(t):
+        p["intent"] = "desktop_app"
+    if p["intent"] == "desktop_app":
+        p["app"] = str(rule.get("app") or p.get("app") or "").strip()
+    else:
+        p.pop("app", None)
     cnt = intents.requested_count(t)
     try: p["count"] = cnt or int(p.get("count") or 0)
     except (TypeError, ValueError): p["count"] = cnt or 0

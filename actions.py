@@ -14,7 +14,7 @@ def norm_key(k, mac=None):
     return k
 
 VALID = {"move", "click", "double_click", "right_click", "type", "hotkey", "scroll",
-         "open_url", "web_search", "open_app", "click_element", "look", "first_video", "wait", "done"}
+         "open_url", "web_search", "open_app", "click_element", "type_element", "look", "first_video", "wait", "done"}
 NEEDS_XY = {"move", "click", "double_click", "right_click"}
 
 class ActionError(ValueError):
@@ -81,6 +81,10 @@ def parse_action(text):
         except (TypeError, ValueError):
             raise ActionError("click_element needs a numeric id FROM THE CLICKABLE ELEMENTS LIST; if there is no list, "
                               "use click with x,y on the screenshot instead")
+    if act == "type_element":
+        try: a["id"] = int(a.get("id", a.get("element")))
+        except (TypeError, ValueError): raise ActionError("type_element needs a numeric id from the ELEMENTS list")
+        if not isinstance(a.get("text"), str): raise ActionError("type_element needs text")
     if act == "open_app" and not str(a.get("app") or a.get("name") or "").strip():
         raise ActionError("open_app needs app")
     if act == "open_app":
@@ -173,6 +177,23 @@ class Executor:
                 raise NeedsVision("no video link found on the page")
             self.sleep(0.8)  # page still loading
 
+    def open_app(self, name):
+        """Launch through the installed-app index (real shortcut / exe / AUMID / .app); fall back to the OS 'start' / 'open -a'."""
+        import appindex
+        if self.run_cmd is _default_runner and not getattr(self, "no_index", False):
+            try:
+                e, blocked = appindex.launch(name)
+                if blocked: raise PermissionError(blocked)
+                return f"launched {e['name']}"
+            except LookupError:
+                pass
+            except PermissionError:
+                raise
+            except Exception:
+                pass
+        self.run_cmd(app_command(name))
+        return f"launched {name}"
+
     def _xy(self, a):
         return int(a["x"] * self.scale), int(a["y"] * self.scale)
 
@@ -209,12 +230,18 @@ class Executor:
             if not self.dom:
                 raise RuntimeError("no page element list available - use click with x,y")
             self.dom.click(a["id"])
+        elif act == "type_element":
+            if not self.dom or not hasattr(self.dom, "type_into"):
+                raise RuntimeError("no app element list available - click the field with x,y and use type")
+            self.dom.type_into(a["id"], a["text"], a.get("press_enter", False))
         elif act == "look":
             pass  # handled by the loop: next step uses a screenshot
         elif act == "open_app":
-            import intents
+            import intents, policy
             name = intents.APP_NAMES.get(a["app"].lower().strip(), a["app"])  # "Chrome" -> "Google Chrome"
-            self.run_cmd(app_command(name))
+            blocked = policy.check({"action": "open_app", "app": name})
+            if blocked: raise PermissionError(blocked)
+            self.last_info = self.open_app(name)
             intents.note_app(name)
             self.sleep(1.5)
         elif act == "first_video":

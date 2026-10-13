@@ -11,7 +11,7 @@ MOD = "cmd" if IS_MAC else "ctrl"
 from actions import parse_action, Executor, is_risky, ActionError
 from llm import OllamaClient
 from safety import KillSwitch, console_confirm
-import safety
+import safety, policy
 
 SYSTEM = """You are a computer-use agent controlling a {os} computer with mouse and keyboard.
 Each turn you get a screenshot with a red/blue coordinate grid (numbers are pixel coordinates in THIS image),
@@ -22,7 +22,8 @@ Actions (PREFER the high-level ones at the top):
  open_app: "app" (e.g. "Safari", "Notes") - launches/focuses an application
  open_url: "url", optional "browser" (e.g. "Safari", "Google Chrome") - opens a website directly
  web_search: "query", optional "browser" - opens DuckDuckGo results for the query
- click_element: "id" - click a page element from the CLICKABLE ELEMENTS list (best for web pages, when a list is given)
+ click_element: "id" - click an element from the CLICKABLE ELEMENTS / ELEMENTS list (web page or app window, when a list is given)
+ type_element: "id", "text", optional "press_enter" - type into a text field from the app ELEMENTS list
  click/double_click/right_click/move: "x", "y" (pixel coordinates in the screenshot)
  type: "text", "press_enter": true/false, "sensitive": true if it is a password/secret
  hotkey: "keys": ["{mod}","l"]  (the main shortcut modifier on this OS is {mod})
@@ -437,15 +438,47 @@ class Agent:
             except Exception as e:
                 logf.write(json.dumps({"web_error": str(e)}) + "\n")
                 return finish(f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})")
-        self.desktop_only = pl["intent"] == "desktop"
+        self.desktop_only = pl["intent"] == "desktop_app"
+        skip_fast = False
+        if pl["intent"] == "desktop_app":
+            import policy
+            app = pl.get("app") or ""
+            lbl = policy.core_app(app) or policy.core_app(*re.findall(r"control panel|regedit|registry editor|task manager|services\.msc|gpedit|"
+                                                                      r"command prompt|powershell|windows terminal|activity monitor|system settings|system preferences", task, re.I))
+            if not lbl and re.search(r"\b(open|launch|start|go to|use)\s+(?:the\s+|my\s+)?(?:windows\s+|system\s+)?settings\b", task, re.I): lbl = "Settings"
+            if lbl:
+                logf.write(json.dumps({"blocked": lbl}) + "\n")
+                return finish(policy.message(lbl))
+            if app:
+                t0 = time.time()
+                try:
+                    ex = self.make_executor(1.0); ex.execute({"action": "open_app", "app": app})
+                    info = getattr(ex, "last_info", "") if isinstance(getattr(ex, "last_info", ""), str) else ""
+                    self.log(f"[app] {info or 'opened ' + app} ({time.time() - t0:.1f}s)"); logf.write(json.dumps({"app_open": app, "info": info}) + "\n")
+                except PermissionError as e:
+                    return finish(str(e))
+                except Exception as e:
+                    return finish(f"stopped: couldn't open {app} ({type(e).__name__}: {e}). Is it installed?")
+                if planner.rule_plan(task).get("sure") or re.match(r"^\W*(?:\w+\W+){0,3}?(open|launch|start|run)\s+(the\s+)?" + re.escape(app) + r"(\s+app)?\W*$", task, re.I):
+                    return finish(f"Opened {app}.")
+                skip_fast = True
+                time.sleep(a_cfg.get("app_start_wait_s", 2.0))
+                try:
+                    import appui
+                    appui.focus_window(re.sub(r"^(microsoft|adobe|google)\s+", "", app, flags=re.I), timeout=6)
+                    if a_cfg.get("app_ui", True) and self.dom is None and not getattr(self, "_injected_dom", False):
+                        self.dom = appui.AppUI(gui=self.gui if not isinstance(self.gui, type(None)) else None, limit=a_cfg.get("max_elements", 60), log=self.log)
+                except Exception as e:
+                    self.log(f"[app] structured view unavailable ({type(e).__name__}); using screenshots")
+                history.append(f"1: open_app {app} (done) - it is open and focused; now do the rest of the task inside it")
         # 0) web task + Chrome extension connected: do it all through the extension (no screenshots)
-        if ext_ok and pl["intent"] != "desktop" or self.use_extension(task) and pl["intent"] != "desktop":
+        if ext_ok and pl["intent"] != "desktop_app" or self.use_extension(task) and pl["intent"] != "desktop_app":
             try:
                 result = self.run_via_extension(task, history, logf)
                 self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
             except NeedsVision as e:
                 logf.write(json.dumps({"web_handover": str(e)}) + "\n")
-                if pl["intent"] != "desktop" and not self.cfg["agent"].get("web_vision_fallback", False):
+                if pl["intent"] != "desktop_app" and not self.cfg["agent"].get("web_vision_fallback", False):
                     return finish(f"stopped: I couldn't finish this in Chrome ({e}). Try rephrasing or doing the last step yourself.")
                 self.log(f"[web] handing over to screenshots: {e}")
             except Exception as e:  # don't fall into a blind screenshot loop for a web task - report the problem
@@ -454,7 +487,7 @@ class Agent:
                 self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
             history.append("(note) The Chrome extension is connected: Google Chrome IS open. Do not open another browser.")
         # 1) deterministic fast handling of common commands (open app / site, first video ...)
-        if a_cfg.get("intents", True):
+        if a_cfg.get("intents", True) and not skip_fast:
             fixed, rest = intents.plan(task)
             done_steps = []
             for act in fixed:
@@ -536,16 +569,16 @@ class Agent:
                 if snap and snap.get("elements") and a_cfg.get("text_fast_path", True):
                     # FAST PATH: no image, the page structure as text on the fast text model
                     tprompt = prompt.replace(f"Image size {img.width}x{img.height}." if not norm else "Coordinates: normalized 0-1000.", "(No screenshot this step: use the element list. Use look if you need to see the screen.)")
-                    tprompt = browser_dom.format_elements(snap) + "\n\n" + tprompt
+                    tprompt = (__import__("appui").format_elements(snap) if snap.get("kind") == "app" else browser_dom.format_elements(snap)) + "\n\n" + tprompt
                     raw = self.client.text_chat([{"role": "system", "content": system}, {"role": "user", "content": tprompt}],
                                                 json_mode=True, on_token=self.on_token, num_predict=self.client.num_predict)
                     mode = "dom"
                 else:
                     if snap and snap.get("elements"):
-                        prompt = browser_dom.format_elements(snap) + "\n\n" + prompt
+                        prompt = (__import__("appui").format_elements(snap) if snap.get("kind") == "app" else browser_dom.format_elements(snap)) + "\n\n" + prompt
                         vsys = system
                     else:  # no element list -> don't offer click_element (the model invents ids otherwise)
-                        vsys = "\n".join(l for l in system.splitlines() if "click_element" not in l)
+                        vsys = "\n".join(l for l in system.splitlines() if "click_element" not in l and "type_element" not in l)
                         prompt += "\nThere is NO element list this step: to click, use click with x,y on the screenshot."
                     raw = self.client.chat(vsys, prompt, img, on_token=self.on_token)
                     mode = "vision"
@@ -568,7 +601,8 @@ class Agent:
                 if act["action"] == "done":
                     result = act.get("summary", "done"); logf.write(json.dumps(entry) + "\n"); break
                 act = self.fix_browser(act)
-                why = safety.vision_block(act, task)
+                import policy
+                why = policy.check(act, task)
                 if why:
                     blocked_opens += 1
                     self.log(f"!! blocked: {why}"); entry["blocked"] = why; logf.write(json.dumps(entry) + "\n")
@@ -608,7 +642,10 @@ class Agent:
                     entry["loop"] = 2; logf.write(json.dumps(entry) + "\n"); continue
                 if level == 1:
                     notes.append(f"You just repeated the same action ({act['action']}). Check the screenshot: if it did not help, do something different.")
-                if s_cfg.get("confirm_risky", True) and is_risky(act, s_cfg.get("risky_words", [])):
+                el_text = ""
+                if act["action"] in ("click_element", "type_element") and snap:
+                    el_text = next((e.get("text", "") for e in snap.get("elements", []) if str(e.get("id")) == str(act.get("id"))), "")
+                if s_cfg.get("confirm_risky", True) and (is_risky(act, s_cfg.get("risky_words", [])) or policy.risky(act, el_text)):
                     shown = dict(act); shown["text"] = "***" if act.get("sensitive") else act.get("text")
                     if not self.confirm(f"Agent wants to: {json.dumps(shown)}"):
                         history.append(f"{step}: {act['action']} DENIED by user - choose another approach or finish")
@@ -661,7 +698,7 @@ def needs_task(message):
     if ACTION_RE.search(m) and not _re.match(r"^\s*(what|who|why|how|when|where|which|is|are|do|does|can|should)\b(?!.*\b(look ?up|search|google|open|make|create|play)\b)", m, _re.I):
         return True
     rp = planner.rule_plan(m)
-    return bool(rp.get("sure")) and rp["intent"] != "desktop"
+    return bool(rp.get("sure")) and rp["intent"] != "desktop_app"
 
 def route(client, message, history=(), on_token=None):
     """Return ("chat", reply) or ("task", task). '/do ...' forces a task, '/chat ...' forces chat.

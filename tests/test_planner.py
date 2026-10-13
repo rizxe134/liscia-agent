@@ -36,13 +36,13 @@ CASES = [  # (task, intent, outputs)
     ("how tall is mount everest", "web_answer", []),
     ("what's the weather in new york today", "web_answer", []),
     ("when is the next spacex launch", "web_answer", []),
-    ("open calculator", "desktop", []),
-    ("open notepad and type hello world", "desktop", []),
-    ("open calculator and add 2+2", "desktop", []),
-    ("open file explorer", "desktop", []),
-    ("open spotify app", "desktop", []),
-    ("take a screenshot of my desktop", "desktop", []),
-    ("open the settings app and turn on dark mode", "desktop", []),
+    ("open calculator", "desktop_app", []),
+    ("open notepad and type hello world", "desktop_app", []),
+    ("open calculator and add 2+2", "desktop_app", []),
+    ("open file explorer", "desktop_app", []),
+    ("open spotify app", "desktop_app", []),
+    ("take a screenshot of my desktop", "desktop_app", []),
+    ("open the settings app and turn on dark mode", "desktop_app", []),
     ("open amazon and add a usb cable to the cart", "web_interact", []),
     ("go on the page and look for daft punk songs", "web_interact", []),
     ("log into my gmail and check unread emails", "web_interact", []),
@@ -53,7 +53,7 @@ OK_ALT = {"search wikipedia for alan turing": {"web_answer", "web_interact", "op
           "log into my gmail and check unread emails": {"web_interact", "open_site"},
           "open amazon and add a usb cable to the cart": {"web_interact", "open_site"},
           "go on the page and look for daft punk songs": {"web_interact", "web_answer"},
-          "take a screenshot of my desktop": {"desktop"},
+          "take a screenshot of my desktop": {"desktop_app"},
           "what's the weather in new york today": {"web_answer"}}
 
 def model(reply):
@@ -89,13 +89,13 @@ class PlannerPhrasings(unittest.TestCase):
 
     def test_plausible_wrong_model_corrected(self):
         # the exact v1.2.8 failure: model says desktop (drive Word/Excel by vision) -> code forces files
-        for wrong in [{"intent": "desktop", "query": "", "outputs": []},
+        for wrong in [{"intent": "desktop_app", "query": "", "outputs": []},
                       {"intent": "web_answer", "query": "top militaries", "outputs": []},
                       {"intent": "web_research_to_files", "query": "militaries", "outputs": ["docx"], "count": 3}]:
             p = planner.plan(model(json.dumps(wrong)), MIL)
             self.assertEqual(p["intent"], "web_research_to_files"); self.assertEqual(sorted(p["outputs"]), ["docx", "xlsx"]); self.assertEqual(p["count"], 10)
-        p = planner.plan(model('{"intent":"desktop","query":"x","outputs":[]}'), "who is the richest person in the world")
-        self.assertNotEqual(p["intent"], "desktop")
+        p = planner.plan(model('{"intent":"desktop_app","query":"x","outputs":[]}'), "who is the richest person in the world")
+        self.assertNotEqual(p["intent"], "desktop_app")
 
     def test_militaries_query(self):
         p = planner.plan(None, MIL, use_model=False)
@@ -113,22 +113,28 @@ class PlannerPhrasings(unittest.TestCase):
             c = model("{}"); planner.plan(c, t); c.text_chat.assert_not_called()
 
 class VisionBlocklist(unittest.TestCase):
+    """1.4.0: central policy; core system apps are blocked always, other apps (incl. Word/Excel) may be operated."""
     def test_blocks(self):
+        import policy
         t = "Create a Word document and an Excel sheet listing the top 10 militaries"
-        for act in [{"action": "hotkey", "keys": ["win", "r"]}, {"action": "hotkey", "keys": "winleft+r"},
+        for act in [{"action": "hotkey", "keys": ["win", "r"]}, {"action": "hotkey", "keys": "winleft+r"}, {"action": "hotkey", "keys": ["win", "i"]},
                     {"action": "type", "text": "services.msc"}, {"action": "open_app", "app": "regedit"},
                     {"action": "open_app", "app": "cmd"}, {"action": "open_app", "app": "PowerShell"},
                     {"action": "open_app", "app": "Task Manager"}, {"action": "hotkey", "keys": ["ctrl", "shift", "esc"]},
-                    {"action": "open_app", "app": "Settings"}, {"action": "open_app", "app": "Microsoft Word"},
-                    {"action": "open_app", "app": "Excel"}]:
-            self.assertTrue(safety.vision_block(act, t), act)
-    def test_allows_when_asked_or_harmless(self):
-        self.assertIsNone(safety.vision_block({"action": "open_app", "app": "Settings"}, "open the settings app and turn on dark mode"))
-        self.assertIsNone(safety.vision_block({"action": "open_app", "app": "Task Manager"}, "open task manager"))
-        self.assertIsNone(safety.vision_block({"action": "hotkey", "keys": ["win", "r"]}, "press win+r and type notepad"))
-        self.assertIsNone(safety.vision_block({"action": "open_app", "app": "Calculator"}, "open calculator"))
-        self.assertIsNone(safety.vision_block({"action": "type", "text": "hello world"}, "open notepad and type hello world"))
-        self.assertIsNone(safety.vision_block({"action": "hotkey", "keys": ["ctrl", "c"]}, "copy"))
+                    {"action": "open_app", "app": "Settings"}]:
+            self.assertTrue(policy.check(act, t), act)
+    def test_core_blocked_even_when_asked(self):
+        import policy
+        self.assertTrue(policy.check({"action": "open_app", "app": "Settings"}, "open the settings app and turn on dark mode"))
+        self.assertTrue(policy.check({"action": "open_app", "app": "Task Manager"}, "open task manager"))
+        self.assertTrue(policy.check({"action": "hotkey", "keys": ["win", "r"]}, "press win+r and type notepad"))
+    def test_allows_normal_apps(self):
+        import policy
+        for app in ["Calculator", "Notepad", "Spotify", "Microsoft Word", "Excel", "Adobe Photoshop 2025", "VLC media player", "Discord", "Paint"]:
+            self.assertIsNone(policy.check({"action": "open_app", "app": app}), app)
+        self.assertIsNone(policy.check({"action": "type", "text": "hello world"}, "open notepad and type hello world"))
+        self.assertIsNone(policy.check({"action": "hotkey", "keys": ["ctrl", "c"]}, "copy"))
+        self.assertIsNone(policy.check({"action": "type", "text": "my settings for the game"}))
 
 if __name__ == "__main__": unittest.main()
 
@@ -153,7 +159,7 @@ class V131ChatVsTask(unittest.TestCase):
     def test_chat_prompt_says_it_can(self):
         self.assertIn("CAN", self.core.CHAT_SYSTEM); self.assertIn("PowerPoint", self.core.CHAT_SYSTEM)
     def test_cars_plan(self):
-        p = planner.plan(model('{"intent":"desktop","query":"x","outputs":[]}'), CARS)
+        p = planner.plan(model('{"intent":"desktop_app","query":"x","outputs":[]}'), CARS)
         self.assertEqual(p["intent"], "web_research_to_files"); self.assertEqual(sorted(p["outputs"]), ["docx", "pptx", "xlsx"])
         self.assertEqual(p["count"], 10); self.assertEqual(p["query"], "top 10 fastest cars")
     def test_typo_outputs(self):
