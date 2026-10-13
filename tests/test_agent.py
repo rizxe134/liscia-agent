@@ -878,3 +878,35 @@ class V123Agent(V122Scrolling):
         with mock.patch.object(self.link, "call", side_effect=call):
             self.assertEqual(webagent.run_web(ag, "on youtube click something", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None), "ok")
         self.assertEqual(self.ext.url, "https://www.youtube.com")
+
+class V124Slash(unittest.TestCase):
+    def test_token_shown_and_copied(self):
+        import slash
+        got = []
+        r = slash.handle("/token", copy=got.append, token_loader=lambda: "T" * 43)
+        self.assertIn("T" * 43, r); self.assertIn("Chrome panel", r); self.assertIn("Copied", r); self.assertEqual(got, ["T" * 43])
+        r = slash.handle(" /TOKEN ", copy=None, token_loader=lambda: "abc" * 15); self.assertNotIn("Copied", r)
+    def test_copy_failure_is_ok(self):
+        import slash
+        def bad(t): raise RuntimeError("no clipboard")
+        self.assertNotIn("Copied", slash.handle("/token", copy=bad, token_loader=lambda: "x" * 40))
+    def test_help_and_passthrough(self):
+        import slash
+        self.assertIn("/token", slash.handle("/help")); self.assertIsNone(slash.handle("open youtube"))
+        self.assertIsNone(slash.handle("/do open notes")); self.assertIsNone(slash.handle(""))
+    def test_ui_never_sends_token_to_model(self):
+        import ui, slash
+        app = ui.ChatApp.__new__(ui.ChatApp)
+        app.busy = False; app.entry = mock.MagicMock(); app.entry.get.return_value = "/token"
+        writes = []; app.write = lambda tag, t: writes.append((tag, t)); app._copy = mock.MagicMock(); app._set_busy = mock.MagicMock(); app.q = mock.MagicMock()
+        with mock.patch("server.load_token", return_value="S" * 43), mock.patch("threading.Thread") as th:
+            app.send()
+        th.assert_not_called(); app._set_busy.assert_not_called()
+        self.assertTrue(any("S" * 43 in t for _, t in writes)); app._copy.assert_called_once_with("S" * 43)
+    def test_bridge_slash_not_routed(self):
+        import server
+        router = mock.MagicMock(); br = server.Bridge({}, token="t" * 40, router=router)
+        ev = []; br.hub.emit = lambda kind, **d: ev.append((kind, d))
+        br._chat("/token"); br._chat("/help")
+        router.assert_not_called()
+        self.assertFalse(any("t" * 40 in str(d) for _, d in ev)); self.assertTrue(any("/token" in str(d) for _, d in ev))

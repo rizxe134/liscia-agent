@@ -90,6 +90,12 @@ class Bridge:
         threading.Thread(target=self._chat, args=(text,), daemon=True).start(); return True
 
     def _chat(self, text):
+        import slash
+        if slash.is_local(text):  # slash commands never reach the model; the key is only shown in the app itself
+            cmd = text.strip().split()[0].lower()
+            self.hub.emit("chat", text=slash.HELP if cmd in ("/help", "/?", "/commands")
+                          else "For safety the key is only shown in the Liscia Agent app: type /token there.")
+            self.hub.emit("status", state="idle"); return
         try:
             self.hub.emit("status", state="thinking")
             ag = self._get_agent()

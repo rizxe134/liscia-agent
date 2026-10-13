@@ -61,7 +61,7 @@ class ChatApp:
         self.log.pack(fill="both", expand=True, padx=8, pady=6, before=self.status)  # packed last so input row always shows
         r.bind("<F12>", lambda e: self.stop()); r.bind("<Command-period>", lambda e: self.stop())
         self.write("sys", "SYSTEM READY. Chat normally, or ask me to do something on your PC.\n"
-                          "Tips: '/do <task>' forces computer control, '/chat <msg>' forces plain chat.\n"
+                          "Tips: '/do <task>' forces computer control, '/chat <msg>' forces plain chat, '/token' shows your key, '/help' lists commands.\n"
                           "Abort a task: STOP button, Esc/F12, or slam the mouse into a screen corner.\n")
         self._tick()
         threading.Thread(target=self._preload, daemon=True).start()
@@ -170,9 +170,16 @@ class ChatApp:
     def send(self):
         text = self.entry.get().strip()
         if not text or self.busy: return
+        import slash
+        reply = slash.handle(text, copy=self._copy)
+        if reply is not None:  # local command: answered here, never sent to the model or logged
+            self.entry.delete(0, "end"); self.write("user", text.split()[0]); self.write("sys", reply); return
         self.entry.delete(0, "end"); self.write("user", text); self._set_busy(True)
         self.q.put(("status", "thinking"))
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
+
+    def _copy(self, text):
+        self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
 
     def _work(self, text):
         try:
