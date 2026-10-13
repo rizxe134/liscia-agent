@@ -1020,8 +1020,9 @@ class ExtensionZip(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             out = m.build("v9.8.7", out_dir=d)
             self.assertTrue(out.endswith("liscia-agent-chrome-extension-9.8.7.zip"))
-            z = zipfile.ZipFile(out); names = z.namelist()
-            self.assertEqual(json.loads(z.read("manifest.json"))["version"], "9.8.7")
+            with zipfile.ZipFile(out) as z:
+                names = z.namelist(); man = json.loads(z.read("manifest.json"))
+            self.assertEqual(man["version"], "9.8.7")
             for f in ("background.js", "content.js", "sidepanel.html", "icon128.png"): self.assertIn(f, names)
             with self.assertRaises(SystemExit): m.build("1.2.5-beta", out_dir=d)
 
