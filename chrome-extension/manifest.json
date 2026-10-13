@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "PC Agent Panel",
+  "version": "1.0.0",
+  "description": "Chat with your local PC Agent in Chrome's side panel.",
+  "permissions": ["sidePanel", "storage", "tabs", "scripting"],
+  "host_permissions": ["http://127.0.0.1:8765/*", "<all_urls>"],
+  "background": {"service_worker": "background.js"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "action": {"default_title": "Open PC Agent"},
+  "content_scripts": [{"matches": ["<all_urls>"], "js": ["content.js"], "run_at": "document_idle"}],
+  "icons": {"128": "icon128.png"}
+}

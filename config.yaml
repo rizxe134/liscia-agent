@@ -1,0 +1,37 @@
+ollama:
+  host: http://localhost:11434
+  model: qwen3-vl:4b-instruct  # main vision model (outputs 0-1000 coords; handled automatically)
+  fallback_model: qwen2.5vl:7b  # used if the main model errors
+  text_model: qwen2.5:7b     # fast text-only model for chat, routing, planning and the browser fast path
+  keep_alive: 30m            # keep models loaded in memory between steps
+  num_predict: 200           # cap output tokens per step (actions are short)
+  # num_ctx: 8192            # optional; if set it is used for every request (default: Ollama server setting)
+  temperature: 0.1
+  timeout_s: 180
+agent:
+  max_steps: 40
+  screenshot_width: 1024     # screenshot is downscaled to this width before sending
+  grid_spacing: 100          # px (in downscaled image) between grid lines; 0 disables grid
+  step_delay_s: 0.6          # pause after each action
+  move_duration_s: 0.25
+  runs_dir: runs
+  max_history: 8             # previous actions (+ results) included in the prompt
+  preferred_browser: Safari  # used for URLs when no browser is in front / was used this session ("" = system default)
+  plan: true                 # ask the model for a short plan before starting
+  coord_mode: auto           # auto | pixels | norm1000 (auto = norm1000 for qwen3-vl)
+  browser_dom: true          # macOS: read Safari/Chrome page elements (click by id, no vision needed)
+  text_fast_path: true       # when page elements are available, use the fast text model instead of a screenshot
+  max_elements: 60
+  change_threshold: 0.01     # fraction of screen that must change to count as "changed"
+  loop_warn: 2               # identical actions in a row -> warn the model
+  loop_block: 3              # -> skip the action and force a different strategy
+  loop_stop: 5               # -> stop the task with a clear message
+safety:
+  failsafe: true             # slam mouse into a screen corner to abort
+  kill_keys: [esc, f12]      # global kill hotkeys
+  confirm_risky: true        # ask before typing passwords / clicking buy/send/submit etc.
+  risky_words: [buy, purchase, pay, checkout, order, send, submit, delete, remove, confirm, transfer, password, post, publish]
+
+panel:
+  enabled: true   # Chrome side panel bridge (127.0.0.1 only, token-authenticated)
+  port: 8765

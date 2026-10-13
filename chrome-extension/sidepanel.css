@@ -1,0 +1,21 @@
+:root{--bg:#000;--fg:#00ff66;--dim:#00994d;--user:#b3ffcc;--warn:#ffcc00;--err:#ff5566}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:12.5px/1.45 "SF Mono",Menlo,Monaco,Consolas,monospace;display:flex;flex-direction:column;
+ text-shadow:0 0 4px rgba(0,255,102,.35)}
+header{display:flex;justify-content:space-between;padding:8px 10px;border-bottom:1px solid var(--dim)}
+#title{font-weight:bold;letter-spacing:1px}.dim{color:var(--dim)}
+#setup{padding:10px;border-bottom:1px solid var(--dim)}#setup p{margin:0 0 6px;color:var(--dim)}code{color:var(--user)}
+#log{flex:1;overflow-y:auto;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
+.line{margin:2px 0}.user{color:var(--user)}.user::before{content:"> "}.bot::before{content:"$ "}
+.step{color:var(--dim)}.step b{color:var(--fg);font-weight:normal}.warn{color:var(--warn)}.err{color:var(--err)}
+.confirm{border:1px solid var(--warn);color:var(--warn);padding:6px;margin:6px 0}
+.confirm button{margin:6px 8px 0 0}
+#status{padding:4px 10px;color:var(--dim);border-top:1px solid #003b1d}
+#controls{display:flex;gap:6px;padding:4px 10px}
+button{background:#000;color:var(--fg);border:1px solid var(--fg);font:inherit;padding:3px 8px;cursor:pointer}
+button:hover:not(:disabled){background:var(--fg);color:#000}button:disabled{opacity:.35;cursor:default}
+#stop:not(:disabled){border-color:var(--err);color:var(--err)}
+form{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px solid var(--dim)}
+input{flex:1;background:#000;color:var(--fg);border:none;outline:none;font:inherit;caret-color:transparent}
+#tok{border:1px solid var(--dim);padding:3px;margin-right:6px;caret-color:var(--fg)}
+#cur{animation:blink 1s steps(1) infinite}@keyframes blink{50%{opacity:0}}

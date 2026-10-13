@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><link rel="stylesheet" href="sidepanel.css"></head>
+<body>
+  <header><span id="title">&gt;_ PC AGENT</span><span id="conn" class="dim">[offline]</span></header>
+  <section id="setup" hidden>
+    <p>Paste the token from <code>~/.pc-agent/token</code> on your Mac<br>(Terminal: <code>cat ~/.pc-agent/token | pbcopy</code>)</p>
+    <input id="tok" type="password" placeholder="token" autocomplete="off"><button id="save">CONNECT</button>
+  </section>
+  <main id="log"></main>
+  <div id="status"><span id="spin"></span> <span id="state">READY</span></div>
+  <div id="controls"><button id="stop" disabled>[ STOP ]</button><button id="take" disabled>[ TAKE OVER ]</button></div>
+  <form id="f"><span class="prompt">&gt;</span><input id="msg" placeholder="ask or tell it to do something..." autocomplete="off"><span id="cur">█</span></form>
+  <script src="sidepanel.js"></script>
+</body></html>
