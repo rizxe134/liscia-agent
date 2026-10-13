@@ -82,3 +82,37 @@ class OllamaClient:
             return [m["name"] for m in tags]
         except Exception:
             return None
+
+def missing_models(installed, wanted):
+    """Which wanted models aren't pulled. 'qwen2.5:7b' matches 'qwen2.5:7b'; a bare name matches name:latest."""
+    have = set(installed or [])
+    have |= {n[:-7] for n in have if n.endswith(":latest")}
+    return [w for w in dict.fromkeys(x for x in wanted if x) if w not in have]
+
+def pull_model(host, name, on_progress=None, post=None):
+    """Stream `ollama pull` through the API. on_progress(status, completed_bytes, total_bytes)."""
+    post = post or requests.post
+    with post(f"{host.rstrip('/')}/api/pull", json={"model": name, "stream": True}, stream=True, timeout=(10, 600)) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line: continue
+            m = json.loads(line)
+            if m.get("error"): raise RuntimeError(m["error"])
+            if on_progress: on_progress(m.get("status", ""), m.get("completed") or 0, m.get("total") or 0)
+            if m.get("status") == "success": return True
+    return True
+
+def start_ollama():
+    """Best effort: launch Ollama if it's installed but not running."""
+    import subprocess, sys, shutil
+    try:
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-ga", "Ollama"], timeout=10, capture_output=True)
+        elif shutil.which("ollama"):
+            flags = 0x08000000 if sys.platform.startswith("win") else 0  # CREATE_NO_WINDOW
+            subprocess.Popen(["ollama", "serve"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+        else:
+            return False
+        return True
+    except Exception:
+        return False

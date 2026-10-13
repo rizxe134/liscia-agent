@@ -66,7 +66,9 @@ def to_points(nx, ny, w, h, scale, ratio):
     """0-1000 -> screenshot image px (w,h) -> real screen px (*scale) -> points (*ratio)."""
     return int(round(nx * w / 1000.0 * scale * ratio)), int(round(ny * h / 1000.0 * scale * ratio))
 
-def load_config(path="config.yaml"):
+def load_config(path=None):
+    if path is None:
+        import paths; path = paths.config_path()
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
@@ -175,7 +177,8 @@ class Agent:
 
     def run(self, task):
         a_cfg, s_cfg = self.cfg["agent"], self.cfg["safety"]
-        run_dir = os.path.join(a_cfg.get("runs_dir", "runs"), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        import paths
+        run_dir = os.path.join(paths.runs_dir(a_cfg.get("runs_dir", "runs")), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
         os.makedirs(run_dir, exist_ok=True)
         logf = open(os.path.join(run_dir, "log.jsonl"), "a", encoding="utf-8")
         history, result, notes = [], "max steps reached", []

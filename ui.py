@@ -66,8 +66,52 @@ class ChatApp:
         self._tick()
         threading.Thread(target=self._preload, daemon=True).start()
 
+    def _ask(self, msg):
+        ev, box = threading.Event(), {}
+        self.q.put(("confirm", (msg, ev, box))); ev.wait(); return box.get("ok", False)
+
+    def setup_models(self, ask=None, sleep=None):
+        """First-launch check: Ollama running? models pulled? Offer to pull with progress in the chat. Returns True if ready."""
+        import llm, time as _t
+        ask, sleep = ask or self._ask, sleep or _t.sleep
+        o = self.cfg["ollama"]; client = llm.OllamaClient(o["host"], o["model"])
+        installed = client.check()
+        if installed is None:
+            self.q.put(("sys", "Ollama isn't running - trying to start it..."))
+            if llm.start_ollama():
+                for _ in range(20):
+                    sleep(1); installed = client.check()
+                    if installed is not None: break
+        if installed is None:
+            self.q.put(("warn", "Ollama not found. Install it from https://ollama.com/download, open it, then restart PC Agent."))
+            return False
+        need = llm.missing_models(installed, [o.get("model"), o.get("text_model")])
+        if not need: return True
+        if not ask("PC Agent needs these local models (a few GB, one-time download):\n  " + "\n  ".join(need) + "\n\nDownload them now?"):
+            self.q.put(("warn", "Models missing: " + ", ".join(need) + ". Run `ollama pull <name>` or restart PC Agent to be asked again."))
+            return False
+        for name in need:
+            self.q.put(("sys", f"downloading {name} ...")); self.q.put(("busy", True)); last = [-10]
+            def prog(status, done, total, name=name):
+                if total:
+                    pct = int(done * 100 / total)
+                    self.q.put(("status", f"pulling {name} {pct:3d}% {done/1e9:.1f}/{total/1e9:.1f} GB"))
+                    if pct >= last[0] + 10: last[0] = pct - pct % 10; self.q.put(("step", f"{name}: {last[0]}%"))
+                else:
+                    self.q.put(("status", f"pulling {name}: {status}"))
+            try:
+                llm.pull_model(o["host"], name, prog); self.q.put(("sys", f"{name} ready."))
+            except Exception as e:
+                self.q.put(("warn", f"download of {name} failed: {e}")); self.q.put(("end", None)); return False
+        self.q.put(("end", None)); return True
+
     def _preload(self):
         """Warm up the models in the background so the first message is fast."""
+        if self.cfg.get("setup_check", True):
+            try:
+                if not self.setup_models(): return
+            except Exception as e:
+                self.q.put(("warn", f"setup check failed: {e}"))
         try:
             from llm import OllamaClient
             o = self.cfg["ollama"]
@@ -95,6 +139,7 @@ class ChatApp:
             elif kind == "stream_end":
                 self.log.config(state="normal"); self.log.insert("end", "\n"); self.log.config(state="disabled")
             elif kind == "end": self._set_busy(False)
+            elif kind == "busy": self._set_busy(True)
             else: self.write(kind, val)
         if self.busy:
             self.spin_i += 1
@@ -155,7 +200,7 @@ def launch(cfg):
     if cfg.get("panel", {}).get("enabled", True):
         try:
             import server; server.serve(cfg)
-            print(f"[panel] side-panel bridge on http://127.0.0.1:{cfg.get('panel', {}).get('port', 8765)} (token in ~/.pc-agent/token)")
+            print(f"[panel] side-panel bridge on http://127.0.0.1:{cfg.get('panel', {}).get('port', 8765)} (token: {__import__('paths').token_path()})")
         except Exception as e:
             print(f"[panel] bridge not started: {e}")
     ChatApp(cfg).root.mainloop()

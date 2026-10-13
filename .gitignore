@@ -16,3 +16,5 @@ token
 tools/*.png
 .DS_Store
 dist/
+build/
+*.spec.bak

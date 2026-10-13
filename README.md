@@ -11,12 +11,26 @@ opens sites → repeat. It ships with a green-on-black terminal chat app and a *
 
 > Tested on macOS (Apple Silicon). Windows support is in the code but has not been tested on a real PC yet.
 
-## 1. Requirements
+## Download the app (no Python needed)
+Get the latest build from **Releases**: `PC-Agent-<ver>-macos-arm64.dmg` (Apple Silicon Macs) or
+`PC-Agent-<ver>-windows-x64.zip` (Windows), plus `pc-agent-chrome-extension-<ver>.zip`.
+- **macOS:** open the .dmg and drag **PC Agent** onto **Applications**. The app is ad-hoc signed, not notarized, so the
+  first time, right-click the app → **Open** → **Open** (or go to System Settings → Privacy & Security → *Open Anyway*).
+- **Windows:** unzip it anywhere and run `PC Agent\PC Agent.exe`. If SmartScreen appears, click *More info → Run anyway*.
+- You still need **Ollama** (https://ollama.com/download). On first launch PC Agent checks Ollama and offers to download
+  any missing models, with progress shown in the chat.
+- Your settings, `runs/` and the side-panel token live outside the app, in `~/Library/Application Support/PC Agent` (macOS)
+  or `%APPDATA%\PC Agent` (Windows). Edit `config.yaml` there.
+- Build it yourself: `scripts/build_mac_dmg.sh` (macOS) or `scripts/build_windows.ps1` (Windows). Pushing a `v*` tag runs
+  `.github/workflows/release.yml`, which builds the Windows zip and attaches it to the release.
+
+## Run from source
+### 1. Requirements
 - **Python 3.10+**: macOS: `brew install python` or python.org. Windows: https://www.python.org/downloads/ (tick **Add python.exe to PATH**).
 - **Ollama**: https://ollama.com/download (macOS app / Windows installer). Leave it running.
 - About 10 GB of disk for the models. 16 GB+ RAM recommended.
 
-## 2. Get the code and the models
+### 2. Get the code and the models
 ```bash
 git clone https://github.com/<you>/pc-agent.git
 cd pc-agent
@@ -26,7 +40,7 @@ ollama pull qwen2.5vl:7b           # optional fallback vision model
 ```
 Model names live in `config.yaml` (`ollama.model`, `text_model`, `fallback_model`). On a weak machine, try `qwen2.5vl:3b`.
 
-## 3. Install
+### 3. Install
 
 **macOS**
 ```bash
@@ -44,7 +58,7 @@ pip install -r requirements.txt
 python -m unittest discover -s tests -q
 ```
 
-## 4. Run
+### 4. Run
 - **macOS:** double-click `start.command`, or run `python agent.py`.
 - **Windows:** double-click `start.bat`, or run `python agent.py`.
 - One task from the console: `python agent.py "search youtube for lofi and play the first video"`.
@@ -84,8 +98,9 @@ buttons, and confirmation prompts in the panel.
 1. Start PC Agent (the chat app). It serves a bridge on `http://127.0.0.1:8765` (localhost only). Configure it under `panel:` in `config.yaml`.
 2. Chrome → `chrome://extensions` → turn on **Developer mode** → **Load unpacked** → select the `chrome-extension/` folder.
 3. Copy your token. It is created on first launch and stays on your machine, so never share or commit it.
-   - macOS: `cat ~/.pc-agent/token | pbcopy`
-   - Windows: `Get-Content $HOME\.pc-agent\token | Set-Clipboard`
+   - Packaged app, macOS: `cat ~/Library/Application\ Support/PC\ Agent/token | pbcopy`
+   - Packaged app, Windows: `Get-Content "$env:APPDATA\PC Agent\token" | Set-Clipboard`
+   - From source: `~/.pc-agent/token` (macOS: `cat ~/.pc-agent/token | pbcopy`)
 4. Click the PC Agent toolbar icon to open the side panel, paste the token, and click **CONNECT**.
 
 Each computer has its own token. Requests without it, or from normal web pages, are rejected.

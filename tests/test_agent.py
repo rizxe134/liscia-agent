@@ -482,4 +482,42 @@ class PanelBridge(unittest.TestCase):
         import tempfile, stat
         p = os.path.join(tempfile.mkdtemp(), "tok")
         t1 = self.server.load_token(p); self.assertGreaterEqual(len(t1), 32); self.assertEqual(self.server.load_token(p), t1)
-        self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+        if os.name != "nt": self.assertEqual(stat.S_IMODE(os.stat(p).st_mode), 0o600)
+
+class Packaging(unittest.TestCase):
+    def test_user_data_dirs(self):
+        import paths
+        self.assertEqual(paths.user_data_dir("darwin", {}, "/Users/u"), "/Users/u/Library/Application Support/PC Agent")
+        self.assertTrue(paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U").endswith("PC Agent"))
+        self.assertIn("C:\\\\R", paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U"))
+    def test_frozen_config_copied_to_data_dir(self):
+        import paths, tempfile
+        d = tempfile.mkdtemp()
+        with mock.patch.object(paths, "frozen", return_value=True), mock.patch.object(paths, "user_data_dir", return_value=d), mock.patch.object(paths, "resource_dir", return_value=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))):
+            p = paths.config_path()
+            self.assertEqual(p, os.path.join(d, "config.yaml")); self.assertTrue(os.path.exists(p))
+            self.assertEqual(paths.runs_dir("runs"), os.path.join(d, "runs"))
+            self.assertEqual(paths.token_path(), os.path.join(d, "token"))
+    def test_missing_models(self):
+        from llm import missing_models
+        self.assertEqual(missing_models(["qwen2.5:7b", "foo:latest"], ["qwen3-vl:4b-instruct", "qwen2.5:7b", "foo", None]),
+                         ["qwen3-vl:4b-instruct"])
+    def test_pull_progress(self):
+        from llm import pull_model
+        lines = [b'{"status":"pulling manifest"}', b'{"status":"downloading","completed":50,"total":100}', b'{"status":"success"}']
+        resp = mock.MagicMock(); resp.__enter__.return_value = resp; resp.iter_lines.return_value = lines
+        seen = []
+        self.assertTrue(pull_model("http://h", "m", lambda *a: seen.append(a), post=lambda *a, **k: resp))
+        self.assertIn(("downloading", 50, 100), seen)
+    def test_setup_models_offers_pull(self):
+        import ui, queue, llm
+        fake = mock.Mock(); fake.q = queue.Queue(); fake.cfg = {"ollama": {"host": "http://h", "model": "a", "text_model": "b"}}
+        with mock.patch.object(llm.OllamaClient, "check", return_value=["b"]), \
+             mock.patch("llm.pull_model", side_effect=lambda h, n, p: (p("downloading", 5, 10), True)[1]) as pm:
+            self.assertTrue(ui.ChatApp.setup_models(fake, ask=lambda m: True))
+            pm.assert_called_once(); self.assertEqual(pm.call_args.args[1], "a")
+        msgs = []
+        while not fake.q.empty(): msgs.append(fake.q.get())
+        self.assertTrue(any(k == "status" and "50%" in v for k, v in msgs))
+        with mock.patch.object(llm.OllamaClient, "check", return_value=None), mock.patch("llm.start_ollama", return_value=False):
+            self.assertFalse(ui.ChatApp.setup_models(fake, ask=lambda m: True, sleep=lambda s: None))

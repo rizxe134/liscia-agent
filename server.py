@@ -8,10 +8,11 @@ import json, os, queue, re, secrets, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
-TOKEN_PATH = os.path.expanduser("~/.pc-agent/token")
 ALLOWED_ORIGIN = re.compile(r"^chrome-extension://[a-p]{32}$")
 
-def load_token(path=TOKEN_PATH):
+def load_token(path=None):
+    if path is None:
+        import paths; path = paths.token_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     if os.path.exists(path):
         with open(path) as f: t = f.read().strip()

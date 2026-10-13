@@ -1,14 +1,15 @@
 """python agent.py            -> chat app
 python agent.py "task"     -> run one task in the console"""
 import argparse, os, sys
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+import paths
+os.chdir(paths.data_dir())
 from core import Agent, load_config
 
 def main():
     p = argparse.ArgumentParser(description="Local computer-use agent (Ollama)")
     p.add_argument("task", nargs="?", help="task to run in console mode (omit to open the chat app)")
     p.add_argument("--model"); p.add_argument("--max-steps", type=int)
-    p.add_argument("--config", default="config.yaml"); p.add_argument("--ui", action="store_true")
+    p.add_argument("--config", default=None); p.add_argument("--ui", action="store_true")
     a = p.parse_args(); cfg = load_config(a.config)
     if a.model: cfg["ollama"]["model"] = a.model
     if a.max_steps: cfg["agent"]["max_steps"] = a.max_steps
