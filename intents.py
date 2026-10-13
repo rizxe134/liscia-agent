@@ -203,7 +203,11 @@ def research_query(text):
     q = (site + " " if site else "") + t.strip(" .?")
     return site, q
 
+WORDNUM = {"three": 3, "five": 5, "ten": 10, "fifteen": 15, "twenty": 20, "twenty five": 25, "thirty": 30, "fifty": 50, "hundred": 100}
+
 def requested_count(text):
+    w = re.search(r"\b(?:top|the)\s+(twenty five|three|five|ten|fifteen|twenty|thirty|fifty|hundred)\b", text or "", re.I)
+    if w: return WORDNUM[w.group(1).lower()]
     m = re.search(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:richest|best|biggest|largest|top)\b", text or "", re.I)
     return int(m.group(1) or m.group(2)) if m else None
 

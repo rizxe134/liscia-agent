@@ -11,6 +11,7 @@ MOD = "cmd" if IS_MAC else "ctrl"
 from actions import parse_action, Executor, is_risky, ActionError
 from llm import OllamaClient
 from safety import KillSwitch, console_confirm
+import safety
 
 SYSTEM = """You are a computer-use agent controlling a {os} computer with mouse and keyboard.
 Each turn you get a screenshot with a red/blue coordinate grid (numbers are pixel coordinates in THIS image),
@@ -234,7 +235,11 @@ class Agent:
         """Web research through the extension, then a local .docx/.xlsx/.txt with the results (opened in the default app)."""
         import webagent, docmaker, urllib.parse
         link = self.link(); intents.note_app("Google Chrome"); self.focus_chrome()
-        site, q = intents.research_query(out["research"]); n = intents.requested_count(task)
+        if out.get("query"):
+            q, site, n = out["query"], (out.get("site") or "").lower() or None, out.get("count") or intents.requested_count(task)
+            if site and site.startswith("http"): site = webagent.host(site).split(".")[0]
+        else:
+            site, q = intents.research_query(out["research"]); n = intents.requested_count(task)
         t0 = time.time()
         search = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
         webagent.nav(link, search, self.log); time.sleep(1.5)
@@ -247,7 +252,7 @@ class Agent:
             if site and e.get("role") == "link" and h.startswith("http") and site in webagent.host(h) and len((e.get("label") or "").split()) >= 2:
                 pick = e; break
         if not pick:  # prefer well-known reliable sources among the results
-            trusted = re.compile(r"(^|\.)(forbes\.com|bloomberg\.com|reuters\.com|wikipedia\.org|apnews\.com|bbc\.(com|co\.uk)|\w+\.gov|"
+            trusted = re.compile(r"(^|\.)(globalfirepower\.com|forbes\.com|bloomberg\.com|reuters\.com|wikipedia\.org|apnews\.com|bbc\.(com|co\.uk)|\w+\.gov|"
                                  r"britannica\.com|statista\.com|who\.int|worldbank\.org|cnbc\.com|nytimes\.com)$")
             for e in snap.get("elements") or []:
                 h = e.get("href") or ""
@@ -269,15 +274,19 @@ class Agent:
                 self.log(f"[web] couldn't read {pick['href'][:60]}: {e}")
         logf.write(json.dumps({"read": url, "chars": len(text)}) + "\n")
         self.log(f"[web] extracting data from {url[:80]} ({len(text)} chars)")
-        data = self.extract_data(out["research"], text, url, n)
+        request = out.get("research") or q
+        if out.get("columns"): request += " (columns: " + ", ".join(out["columns"]) + ")"
+        data = self.extract_data(request, text, url, n)
         if n and len(data["rows"]) < min(n, 5) and text is not results_text:
-            data2 = self.extract_data(out["research"], results_text, search, n)
+            data2 = self.extract_data(request, results_text, search, n)
             if len(data2["rows"]) > len(data["rows"]): data, url = data2, search
-        path = docmaker.make(out["kind"], out.get("name") or data["title"], data["summary"], data["columns"], data["rows"], source=url)
-        opened = docmaker.open_file(path)
-        logf.write(json.dumps({"document": path, "rows": len(data["rows"]), "opened": opened, "secs": round(time.time() - t0, 1)}) + "\n")
+        saved = []
+        for kind in out.get("kinds") or [out["kind"]]:  # several outputs from the same extracted data
+            path = docmaker.make(kind, out.get("name") or out.get("title") or data["title"], data["summary"], data["columns"], data["rows"], source=url)
+            opened = docmaker.open_file(path); saved.append((path, opened))
+            logf.write(json.dumps({"document": path, "rows": len(data["rows"]), "opened": opened, "secs": round(time.time() - t0, 1)}) + "\n")
         names = ", ".join(str(r[1] if len(r) > 1 else r[0]) for r in data["rows"][:5])
-        return (f"Saved {len(data['rows'])} rows to {path}" + (" (opened)" if opened else "") + "\n\n" + data["summary"] +
+        return ("\n".join(f"Saved {len(data['rows'])} rows to {p}" + (" (opened)" if o else "") for p, o in saved) + "\n\n" + data["summary"] +
                 (f"\n\nFirst entries: {names}" if names else ""))
 
     def run_via_extension(self, task, history, logf):
@@ -370,27 +379,54 @@ class Agent:
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
         prev_hash, last_idx, force_look = None, None, False
         bad_streak, last_bad = 0, None
-        opens = {}; same_clicks, last_click = 0, None
+        opens = {}; same_clicks, last_click = 0, None; blocked_opens = 0
         norm = uses_norm_coords(self.cfg)
         system = NORM_SYSTEM if norm else SYSTEM
         orig_task = task
         self.kill.start(); self.log(f"Task: {task}\nRun folder: {run_dir}\nAbort: Esc/F12, STOP, or slam mouse into a screen corner.")
         intents.STATE["named"] = intents.named_browser(task)
-        out = intents.output_request(task)
-        if out and self.cfg["agent"].get("chrome_extension", True) and self.link().connected():
-            try:
-                result = self.research_to_document(task, out, logf)
-            except Exception as e:
-                result = f"stopped: couldn't finish the research/document task ({type(e).__name__}: {e})"
-                logf.write(json.dumps({"doc_error": str(e)}) + "\n")
+        # PLAN: one fast model call (validated by code) decides what kind of task this is
+        import planner
+        ext_ok = self.cfg["agent"].get("chrome_extension", True) and self.link().connected()
+        t_plan = time.time()
+        pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True), log=self.log)
+        self.plan_info = pl
+        logf.write(json.dumps({"plan": pl, "secs": round(time.time() - t_plan, 1)}) + "\n")
+        self.log(f"[plan] {pl['intent']}" + (f" -> {', '.join(pl['outputs'])}" if pl["outputs"] else "") + (f" | {pl['query']}" if pl.get("query") else "") +
+                 f" ({time.time() - t_plan:.1f}s, {pl.get('source')})")
+        def finish(result):
             self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+        if pl["intent"] == "web_research_to_files":
+            if not ext_ok:
+                return finish("stopped: this needs the Chrome extension to read the web. Open Chrome, open the Liscia Agent panel "
+                              "(it should say 'page control ON'), then ask again.")
+            try:
+                return finish(self.research_to_document(task, {"kinds": pl["outputs"], "query": pl["query"], "site": pl.get("site"),
+                                                              "count": pl.get("count"), "columns": pl.get("columns"), "title": pl.get("title")}, logf))
+            except Exception as e:
+                logf.write(json.dumps({"doc_error": str(e)}) + "\n")
+                return finish(f"stopped: couldn't finish the research/document task ({type(e).__name__}: {e})")
+        if pl["intent"] == "web_answer" and ext_ok:
+            try:
+                import webagent, urllib.parse
+                intents.note_app("Google Chrome"); self.focus_chrome()
+                url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(pl["query"] or task)
+                webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
+                return finish(self.answer_question(self.link(), task, logf))
+            except Exception as e:
+                logf.write(json.dumps({"web_error": str(e)}) + "\n")
+                return finish(f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})")
+        self.desktop_only = pl["intent"] == "desktop"
         # 0) web task + Chrome extension connected: do it all through the extension (no screenshots)
-        if self.use_extension(task):
+        if ext_ok and pl["intent"] != "desktop" or self.use_extension(task) and pl["intent"] != "desktop":
             try:
                 result = self.run_via_extension(task, history, logf)
                 self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
             except NeedsVision as e:
-                self.log(f"[web] handing over to screenshots: {e}"); logf.write(json.dumps({"web_handover": str(e)}) + "\n")
+                logf.write(json.dumps({"web_handover": str(e)}) + "\n")
+                if pl["intent"] != "desktop" and not self.cfg["agent"].get("web_vision_fallback", False):
+                    return finish(f"stopped: I couldn't finish this in Chrome ({e}). Try rephrasing or doing the last step yourself.")
+                self.log(f"[web] handing over to screenshots: {e}")
             except Exception as e:  # don't fall into a blind screenshot loop for a web task - report the problem
                 result = f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})"
                 logf.write(json.dumps({"web_error": str(e)}) + "\n")
@@ -511,6 +547,13 @@ class Agent:
                 if act["action"] == "done":
                     result = act.get("summary", "done"); logf.write(json.dumps(entry) + "\n"); break
                 act = self.fix_browser(act)
+                why = safety.vision_block(act, task)
+                if why:
+                    blocked_opens += 1
+                    self.log(f"!! blocked: {why}"); entry["blocked"] = why; logf.write(json.dumps(entry) + "\n")
+                    if blocked_opens >= 3:
+                        result = f"stopped: {why} (3 blocked attempts). I can't do this on the desktop - try rephrasing."; break
+                    history.append(f"{step}: {act['action']} -> BLOCKED: {why}"); notes.append(f"BLOCKED: {why}. Do something else or use done."); continue
                 if act["action"] in ("click", "double_click", "right_click") and "x" in act:
                     xy = (round(float(act["x"])), round(float(act["y"])))
                     same_clicks = same_clicks + 1 if xy == last_click else 1; last_click = xy

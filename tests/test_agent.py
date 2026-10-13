@@ -210,7 +210,7 @@ class FastPathTest(unittest.TestCase):
         client = mock.MagicMock(); client.num_predict = 200
         client.text_chat.side_effect = ['{"action":"click_element","id":3}', '{"action":"done","summary":"ok"}']
         ex = mock.MagicMock(); g = mock.MagicMock(); g.size.return_value = (800, 600)
-        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 5, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 5, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False, "planner": False},
                "safety": {"confirm_risky": False, "kill_keys": []}}
         agent = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)),
                       executor=lambda s: ex, dom=dom)
@@ -675,7 +675,7 @@ class V121WebRouting(ExtensionChannel):
     def test_free_form_web_task_uses_webagent_not_vision(self):
         import extlink
         client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"type","id":"1","text":"daft punk","press_enter":true}', '{"action":"done","summary":"searched"}']
-        a = self._agent(client)
+        a = self._agent(client); a.cfg["agent"]["planner"] = False
         with mock.patch.object(extlink, "LINK", self.link), mock.patch("intents.current_browser", return_value="Safari"):
             self.assertEqual(a.run("go on the page and look for daft punk songs"), "searched")
         client.chat.assert_not_called(); self.assertIn("type", self.ext.calls)

@@ -60,11 +60,13 @@ class OllamaClient:
             print(f"[llm] {self.model} failed ({e}); trying fallback {self.fallback}")
             return self._chat(self.fallback, system, prompt, image, on_token)
 
-    def text_chat(self, messages, json_mode=False, on_token=None, num_predict=None, model=None):
-        """Text-only chat on the fast text model."""
+    def text_chat(self, messages, json_mode=False, on_token=None, num_predict=None, model=None, schema=None, temperature=None):
+        """Text-only chat on the fast text model. schema = a JSON schema for Ollama structured output."""
         payload = {"model": model or self.text_model, "messages": messages,
-                   "options": self._opts({"temperature": max(self.temperature, 0.3), "num_predict": num_predict or 512})}
-        if json_mode: payload["format"] = "json"
+                   "options": self._opts({"temperature": max(self.temperature, 0.3) if temperature is None else temperature,
+                                          "num_predict": num_predict or 512})}
+        if schema: payload["format"] = schema
+        elif json_mode: payload["format"] = "json"
         return self._post(payload, on_token)
 
     def preload(self):
