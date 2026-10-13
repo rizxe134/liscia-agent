@@ -76,6 +76,9 @@ def match(part):
     if m and m.group(2) == "youtube":
         import urllib.parse
         return [{"action": "open_url", "url": "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(m.group(1))}]
+    m = re.match(r"^(?:play|watch|put on|find)\s+(?!the\s+(?:first|1st|top)\b)(.+?)\s+(?:on|in|from)\s+youtube$", p)
+    if m:  # "play pursuit of jade ost on youtube" -> results page, then the video whose title matches
+        return [{"action": "open_url", "url": _yt(m.group(1))}, {"action": "first_video", "match": m.group(1).strip(" '\"")}]
     if re.match(r"^(?:click|open|play|watch|tap)\s+(?:on\s+)?(?:the\s+)?(?:very\s+)?(?:first|1st|top)\s+(?:youtube\s+)?(?:video|result|one)(?:\s+.*)?$", p):
         return [{"action": "first_video"}]
     return None
@@ -107,6 +110,9 @@ def plan(task):
             m = re.match(r"^(?:search|look up|find|type)\s+(?:up\s+)?(?:for\s+)?(.+?)(?:\s+(?:on|in)\s+(?:youtube|it|there))?$",
                          re.sub(r"\s+(?:in|on|using)\s+(?:google chrome|chrome)$", "", _clean(part)))
             if m: got = [dict(acts[-1], url=_yt(m.group(1)))]
+            else:  # "... and play/click <title>" after a YouTube search
+                m = re.match(r"^(?:click|play|open|watch|tap)\s+(?:on\s+)?(?:the\s+)?(?!(?:very\s+)?(?:first|1st|top)\b)(.+?)(?:\s+(?:video|song|one))?$", _clean(part))
+                if m and m.group(1) not in ("it", "that", "video", "one"): got = [{"action": "first_video", "match": m.group(1).strip(" '\"")}]
         if got is None:
             return acts, " and ".join(parts[i:])
         acts += got

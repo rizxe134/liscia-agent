@@ -186,8 +186,15 @@ class Agent:
                 res = link.call("navigate", timeout=25, url=act["url"]) or {}
                 self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
             elif act["action"] == "first_video":
-                time.sleep(1.0); res = link.call("first_video", timeout=20) or {}
-                self.log(f"[web] first video -> {(res.get('clicked') or '')[:60]}")
+                time.sleep(1.0); res = None
+                if act.get("match"):  # a specific title: search the whole results list, scrolling for lazy-loaded items
+                    found = webagent.scroll_find(link, act["match"], self.log, max_scrolls=self.cfg["agent"].get("max_scrolls", 8))
+                    if found:
+                        res = link.call("click", timeout=25, id=found["id"]) or {}
+                        self.log(f"[web] clicked \"{(found.get('label') or '')[:60]}\"")
+                if res is None:
+                    res = link.call("first_video", timeout=20) or {}
+                    self.log(f"[web] first video -> {(res.get('clicked') or '')[:60]}")
             logf.write(json.dumps({"web_fast": act}) + "\n"); done.append(f"{act['action']} {act.get('url','')}".strip() + " (done)")
         if fixed and not rest:
             return "done: " + "; ".join(done)
@@ -246,6 +253,7 @@ class Agent:
         run_dir = os.path.join(paths.runs_dir(a_cfg.get("runs_dir", "runs")), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
         os.makedirs(run_dir, exist_ok=True)
         logf = open(os.path.join(run_dir, "log.jsonl"), "a", encoding="utf-8")
+        logf.write(json.dumps({"task": task}) + "\n")
         history, result, notes = [], "max steps reached", []
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
         prev_hash, last_idx, force_look = None, None, False

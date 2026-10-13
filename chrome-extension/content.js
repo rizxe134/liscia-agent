@@ -7,9 +7,9 @@ const SEL = 'a[href],button,input:not([type=hidden]),select,textarea,summary,[ro
   '[contenteditable=""],[contenteditable=true],[onclick],[tabindex]:not([tabindex="-1"])';
 let nextId = 1;
 
-function visible(e) {
+function visible(e, below = 0) {  // below = how many extra screens under the fold still count
   const r = e.getBoundingClientRect();
-  if (r.width < 3 || r.height < 3 || r.bottom < 0 || r.right < 0 || r.top > innerHeight || r.left > innerWidth) return false;
+  if (r.width < 3 || r.height < 3 || r.bottom < 0 || r.right < 0 || r.top > innerHeight * (1 + below) || r.left > innerWidth) return false;
   const st = getComputedStyle(e);
   return st.visibility !== "hidden" && st.display !== "none" && parseFloat(st.opacity || "1") > 0.05;
 }
@@ -47,11 +47,20 @@ function summary(max = 1200) {
   const body = (document.body && document.body.innerText || "").replace(/\s+/g, " ").trim();
   return (parts.join("\n") + "\n" + body).slice(0, max);
 }
+const YT_RESULTS = 'ytd-video-renderer a#video-title,ytd-rich-item-renderer a#video-title-link,ytd-playlist-renderer a,ytd-channel-renderer a#main-link';
 L.snapshot = (opts = {}) => {
-  const max = opts.max || 80, out = [], seen = new Set();
+  // on-screen elements first, then elements up to `below` screens under the fold (marked below:true; clicking scrolls to them)
+  const max = opts.max || 110, below = opts.below != null ? opts.below : 3, out = [], seen = new Set();
+  const onScreen = [], offScreen = [];
   for (const e of document.querySelectorAll(SEL)) {
+    if (e.closest("[aria-hidden=true]") || !visible(e, below)) continue;
+    (e.getBoundingClientRect().top > innerHeight ? offScreen : onScreen).push(e);
+  }
+  // YouTube: video titles are the most important off-screen elements
+  const yt = new Set(location.hostname.includes("youtube.") ? [...document.querySelectorAll(YT_RESULTS)] : []);
+  offScreen.sort((a, b) => (yt.has(b) ? 1 : 0) - (yt.has(a) ? 1 : 0));
+  for (const e of onScreen.concat(offScreen)) {
     if (out.length >= max) break;
-    if (!visible(e) || e.closest("[aria-hidden=true]")) continue;
     const r = e.getBoundingClientRect(), text = label(e);
     const key = text + "|" + Math.round(r.left / 8) + "|" + Math.round(r.top / 8);
     if (seen.has(key)) continue; seen.add(key);
@@ -62,6 +71,7 @@ L.snapshot = (opts = {}) => {
     if (e.disabled) el.disabled = true;
     if (e.checked) el.checked = true;
     if (document.activeElement === e) el.focused = true;
+    if (r.top > innerHeight) el.below = true;
     out.push(el);
   }
   return {url: location.href, title: document.title, elements: out, dialogs: dialogs(), text: summary(opts.text || 1200),
@@ -146,8 +156,34 @@ L.select = async (id, value) => {
 L.hover = async (id) => { const e = find(id), [x, y] = center(e); for (const t of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) mouse(e, t, x, y); return {hovered: label(e)}; };
 L.scroll = async (args = {}) => {
   if (args.id) { find(args.id).scrollIntoView({block: "center"}); return {scrolled: "to element"}; }
+  const h0 = document.documentElement.scrollHeight, y0 = scrollY;
   const dy = args.amount != null ? Number(args.amount) : (args.direction === "up" ? -0.8 : 0.8) * innerHeight;
-  window.scrollBy({top: dy, behavior: "instant"}); await sleep(200); return {scrollY: Math.round(scrollY)};
+  window.scrollBy({top: dy, behavior: "instant"}); await sleep(250);
+  if (dy > 0 && args.wait_lazy !== false) {  // wait for lazy-loaded results (YouTube continuation etc.)
+    const end = Date.now() + Math.min(args.wait_ms || 2500, 6000);
+    while (Date.now() < end && document.documentElement.scrollHeight === h0 && innerHeight + scrollY >= h0 - 50) await sleep(200);
+  }
+  const h = document.documentElement.scrollHeight;
+  return {scrollY: Math.round(scrollY), moved: Math.round(scrollY - y0), grew: h > h0, at_bottom: innerHeight + scrollY >= h - 4};
+};
+function words(s) { return String(s || "").toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N} ]+/gu, " ").split(/\s+/).filter(Boolean); }
+L.find_text = async (args = {}) => {
+  // best element (whole page, not only the viewport) whose label contains the words of args.text; scrolls it into view
+  const want = words(args.text); if (!want.length) throw new Error("find_text needs text");
+  const pool = [...(location.hostname.includes("youtube.") ? document.querySelectorAll(YT_RESULTS) : []), ...document.querySelectorAll(SEL)];
+  let best = null, bestScore = 0;
+  for (const e of pool) {
+    if (e.closest("[aria-hidden=true],ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,#masthead,ytd-searchbox")) continue;
+    const r = e.getBoundingClientRect(); if (r.width < 3 || r.height < 3) continue;
+    if (["INPUT", "TEXTAREA"].includes(e.tagName)) continue;
+    const have = words(label(e)); if (!have.length) continue;
+    const hit = want.filter(w => have.some(h => h.startsWith(w))).length / want.length;
+    const score = hit + (e.href && e.href.includes("/watch") ? 0.05 : 0);
+    if (hit >= (args.min || 0.99) && score > bestScore) { best = e; bestScore = score; }
+  }
+  if (!best) return {found: false};
+  const id = idOf(best); if (args.reveal !== false) { best.scrollIntoView({block: "center"}); await sleep(150); flash(best); }
+  return {found: true, id, label: label(best), href: best.href || null};
 };
 L.extract_text = (args = {}) => args.id ? {text: (find(args.id).innerText || "").slice(0, args.max || 4000)} : {text: summary(args.max || 4000)};
 L.wait_for = async (args = {}) => {
@@ -164,7 +200,7 @@ L.first_video = async () => {
   const sels = ['ytd-video-renderer a#video-title', 'ytd-rich-item-renderer a#video-title-link', 'a#video-title-link', 'a#video-title',
                 'ytd-video-renderer a#thumbnail', 'ytd-rich-item-renderer a#thumbnail', 'a[href^="/watch"]'];
   for (const s of sels) for (const e of document.querySelectorAll(s)) {
-    if (visible(e) && e.href && e.href.includes("/watch") && !e.closest("ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer")) {
+    if (visible(e, 6) && e.href && e.href.includes("/watch") && !e.closest("ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer")) {
       const id = idOf(e); await L.prepare(id); await L.click(id); return {clicked: label(e), href: e.href};
     }
   }

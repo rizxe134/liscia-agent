@@ -727,3 +727,77 @@ class V121WebRouting(ExtensionChannel):
         self.assertEqual(acts[0]["url"], "https://www.youtube.com/results?search_query=lofi")
         self.assertEqual(_intents.named_browser("open youtube in Chrome"), "Google Chrome")
         self.assertIsNone(_intents.named_browser("open youtube"))
+
+class ScrollFakeExt(FakeExt):
+    """YouTube results where the wanted video only appears after 3 scrolls (lazy-loaded)."""
+    def __init__(self, link):
+        self.scrolled = 0; super().__init__(link)
+    def snap(self):
+        els = [{"id": "1", "role": "searchbox", "label": "Search", "value": ""}, {"id": "2", "role": "button", "label": "Search"},
+               {"id": "5", "role": "link", "label": "Pursuit (Live)", "href": "https://www.youtube.com/watch?v=a"}]
+        if self.scrolled >= 3: els.append({"id": "9", "role": "link", "label": "Pursuit of Jade OST", "href": "https://www.youtube.com/watch?v=jade", "below": True})
+        return {"url": self.url, "title": "YouTube", "elements": els, "dialogs": [], "text": "", "scroll": [self.scrolled * 800, 8000]}
+    def loop(self):
+        while not self.stop:
+            for c in self.link.poll({"version": "test"}, hold=0.05):
+                self.calls.append(c["cmd"]); a = c["args"]; r = {"id": c["id"], "ok": True, "result": {}}
+                if c["cmd"] == "snapshot": r["result"] = self.snap()
+                elif c["cmd"] == "navigate": self.url = a["url"]
+                elif c["cmd"] == "scroll": self.scrolled += 1; r["result"] = {"moved": 800, "grew": True, "at_bottom": False}
+                elif c["cmd"] == "find_text":
+                    ok = self.scrolled >= 3 and "jade" in a["text"].lower()
+                    r["result"] = {"found": True, "id": "9", "label": "Pursuit of Jade OST"} if ok else {"found": False}
+                elif c["cmd"] == "click":
+                    if a["id"] == "9": self.url = "https://www.youtube.com/watch?v=jade"
+                elif c["cmd"] == "first_video": self.url = "https://www.youtube.com/watch?v=a"
+                self.link.result(r)
+
+class V122Scrolling(unittest.TestCase):
+    def setUp(self):
+        import extlink, time
+        self.link = extlink.ExtensionLink(); self.ext = ScrollFakeExt(self.link); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            time.sleep(0.01)
+    def _ag(self, client):
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.log = lambda m: None
+        ag.cfg = {"safety": {"confirm_risky": False, "risky_words": []}}; return ag
+    def test_scroll_find_scrolls_until_found(self):
+        import webagent
+        res = webagent.scroll_find(self.link, "pursuit of jade", log=lambda m: None, sleep=lambda s: None)
+        self.assertEqual(res["id"], "9"); self.assertEqual(self.ext.calls.count("scroll"), 3)
+    def test_scroll_find_gives_up_after_max(self):
+        import webagent
+        self.assertIsNone(webagent.scroll_find(self.link, "nonexistent thing", log=lambda m: None, max_scrolls=5, sleep=lambda s: None))
+        self.assertEqual(self.ext.calls.count("scroll"), 5)
+    def test_done_not_found_is_replaced_by_scrolling(self):
+        import webagent
+        client = mock.MagicMock(); client.text_chat.side_effect = [
+            '{"action":"done","summary":"Pursuit of Jade not found"}', '{"action":"done","summary":"could not find it"}',
+            '{"action":"done","summary":"not found"}', '{"action":"click","id":"9"}', '{"action":"done","summary":"playing"}']
+        res = webagent.run_web(self._ag(client), "play pursuit of jade", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
+        self.assertIn("watch?v=jade", res); self.assertEqual(self.ext.calls.count("scroll"), 3); self.assertIn("click", self.ext.calls)
+    def test_find_action(self):
+        import webagent
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"find","text":"pursuit of jade"}', '{"action":"click","id":"9"}', '{"action":"done","summary":"ok"}']
+        self.assertEqual(webagent.run_web(self._ag(client), "open pursuit of jade", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None), "ok")
+        self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=jade")
+        self.assertIn("(below)", webagent.format_snapshot(self.ext.snap()))
+    def test_deterministic_play_title_on_youtube_scrolls(self):
+        import extlink
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 4, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        client = mock.MagicMock()
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
+            res = a.run("play pursuit of jade on youtube")
+        self.assertTrue(res.startswith("done"), res); self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=jade")
+        client.text_chat.assert_not_called(); client.chat.assert_not_called()
+    def test_plan_play_title(self):
+        acts, rest = _intents.plan("play pursuit of jade ost on youtube")
+        self.assertEqual(rest, ""); self.assertEqual(acts[1], {"action": "first_video", "match": "pursuit of jade ost"})
+        acts, rest = _intents.plan("open youtube and search pursuit and click pursuit of jade")
+        self.assertEqual(rest, ""); self.assertEqual(acts[-1]["match"], "pursuit of jade")
+        self.assertEqual(_intents.plan("search youtube for x and play the first video")[0][-1], {"action": "first_video"})

@@ -107,6 +107,7 @@ async function run(cmd, a) {
     case "select": await inPage(tab.id, "prepare", [a.id]); return await inPage(tab.id, "select", [a.id, a.value]);
     case "hover": await inPage(tab.id, "prepare", [a.id]); return await inPage(tab.id, "hover", [a.id]);
     case "scroll": return await inPage(tab.id, "scroll", [a]);
+    case "find_text": return await inPage(tab.id, "find_text", [a]);
     case "wait_for": return await inPage(tab.id, "wait_for", [a]);
     case "extract_text": return await inPage(tab.id, "extract_text", [a]);
     case "first_video": return await inPage(tab.id, "first_video", []);
