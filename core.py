@@ -1,5 +1,5 @@
 """The screenshot -> model -> action loop."""
-import json, os, time, datetime, yaml
+import json, os, re, time, datetime, yaml
 import sys
 import screen
 import browser_dom
@@ -246,6 +246,14 @@ class Agent:
             h = e.get("href") or ""
             if site and e.get("role") == "link" and h.startswith("http") and site in webagent.host(h) and len((e.get("label") or "").split()) >= 2:
                 pick = e; break
+        if not pick:  # prefer well-known reliable sources among the results
+            trusted = re.compile(r"(^|\.)(forbes\.com|bloomberg\.com|reuters\.com|wikipedia\.org|apnews\.com|bbc\.(com|co\.uk)|\w+\.gov|"
+                                 r"britannica\.com|statista\.com|who\.int|worldbank\.org|cnbc\.com|nytimes\.com)$")
+            for e in snap.get("elements") or []:
+                h = e.get("href") or ""
+                if e.get("role") == "link" and h.startswith("http") and trusted.search(webagent.host(h)) and len((e.get("label") or "").split()) >= 2 \
+                        and not webagent.is_junk(e):
+                    pick = e; break
         pick = pick or webagent.top_result(snap)
         text, url = results_text, snap.get("url", search)
         if pick:
@@ -362,7 +370,7 @@ class Agent:
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
         prev_hash, last_idx, force_look = None, None, False
         bad_streak, last_bad = 0, None
-        opens = {}
+        opens = {}; same_clicks, last_click = 0, None
         norm = uses_norm_coords(self.cfg)
         system = NORM_SYSTEM if norm else SYSTEM
         orig_task = task
@@ -503,6 +511,15 @@ class Agent:
                 if act["action"] == "done":
                     result = act.get("summary", "done"); logf.write(json.dumps(entry) + "\n"); break
                 act = self.fix_browser(act)
+                if act["action"] in ("click", "double_click", "right_click") and "x" in act:
+                    xy = (round(float(act["x"])), round(float(act["y"])))
+                    same_clicks = same_clicks + 1 if xy == last_click else 1; last_click = xy
+                    if same_clicks >= 3:
+                        result = (f"stopped: clicked the same spot ({xy[0]},{xy[1]}) 3 times without progress. "
+                                  "I can't do this by clicking on the screen - try rephrasing, or ask me to make a document/spreadsheet instead.")
+                        self.log(f"!! {result}"); entry["loop"] = "same_click"; logf.write(json.dumps(entry) + "\n"); break
+                else:
+                    same_clicks, last_click = 0, None
                 if act["action"] == "open_url" and act.get("url"):
                     act["url"] = intents.safe_url(act["url"])
                 logged = {k: ("***" if k == "text" and act.get("sensitive") else v) for k, v in act.items() if k not in ("thought", "reason")}

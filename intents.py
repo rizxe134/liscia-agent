@@ -141,6 +141,8 @@ RESEARCH_RE = re.compile(r"\b(look(?:s|ing)? (?:for|up)|find|search|research|get
 def output_request(task):
     """'... and summarize and put it in a word document' -> {"kind": "docx", "name": None, "research": "<the rest>", "summary": True}."""
     t = fix_typos(task or "").strip()
+    first = _output_first(t)
+    if first: return first
     m = OUTPUT_RE.search(t)
     if not m: return None
     word = m.group(1).lower()
@@ -148,8 +150,47 @@ def output_request(task):
     research = t[:m.start()].strip(" ,.")
     research = re.sub(r"(?:,?\s*(?:and|then)\s+)?(?:summari[sz]e|summrize|summerize|sumarize)(?:\s+(?:it|them|that|this))?\s*$", "", research, flags=re.I).strip(" ,.")
     if not research: return None
+    if re.match(_LEAD + r"(?:open|launch|start|use)\s+(?:up\s+)?(?:microsoft\s+)?[\w ]{1,20}$", research, re.I) and not FACTS_RE.search(research):
+        return None  # "open excel and create a new sheet": nothing to research
     return {"kind": kind, "name": (m.group(2) or "").strip() or None, "research": research,
             "summary": bool(re.search(r"summ?[ae]?r", t[m.start() - 30 if m.start() > 30 else 0:], re.I)) or True}
+
+FACTS_RE = re.compile(r"\b(top \d+|richest|poorest|latest|newest|news|best|worst|tallest|biggest|largest|smallest|fastest|most|price|prices|"
+                      r"cost|weather|population|statistics|stats|ranking|rankings|current|today|this year|20\d\d|who|what|when|where|"
+                      r"summary of|information|info|facts|data|list of|history of|reviews?|specs|schedule|scores?|results)\b", re.I)
+
+APP_KIND = [(r"excel|google sheets|sheets|numbers|spreadsheet|xlsx|csv", "xlsx"),
+            (r"word|google docs|docs|pages|document|docx|doc", "docx"),
+            (r"notepad|textedit|text ?edit|text file|notes?|txt", "txt")]
+_VERIFY = re.compile(r"[.,;]?\s*(?:and\s+)?(?:please\s+)?(?:verify|double[- ]check|check|confirm|make sure)\b.*$", re.I)
+_LEAD = r"^(?:(?:hey|ok|okay|please|can you|could you|would you|will you|pls)\s+)*"
+
+def _kind(word):
+    w = word.lower()
+    return next(k for pat, k in APP_KIND if re.search(pat, w))
+
+def _output_first(t):
+    """'Open Excel, create a new sheet, and list the top 20 richest people ... Verify ...' /
+    'make an excel spreadsheet of the top 10 laptops' -> output request."""
+    s = _VERIFY.sub("", t).strip(" .")
+    m = re.match(_LEAD + r"(?:open|launch|start|use|go to|go into)\s+(?:up\s+)?(?:microsoft\s+|ms\s+)?"
+                 r"(excel|word|notepad|google sheets|sheets|google docs|numbers|pages|textedit|text ?edit)\b\s*[,.]?\s*(?:and\s+|then\s+)?(.*)$", s, re.I)
+    if m:
+        kind, rest = _kind(m.group(1)), m.group(2)
+        rest = re.sub(r"^(?:(?:and|then)\s+)?(?:create|make|start|open|add)\s+(?:a\s+|an\s+)?(?:new\s+|blank\s+|empty\s+)?"
+                      r"(?:sheet|spreadsheet|workbook|document|doc|file|page|note|table|list)\b\s*[,.]?\s*(?:and\s+|then\s+)?", "", rest.strip(), flags=re.I)
+        rest = re.sub(r"^(?:in it|there|in there)\s*[,.]?\s*(?:and\s+)?", "", rest, flags=re.I).strip(" ,.")
+        if rest and FACTS_RE.search(rest):  # content needs facts from the web (not dictation like "type hello")
+            return {"kind": kind, "name": None, "research": rest, "summary": True}
+        return None
+    m = re.match(_LEAD + r"(?:create|make|build|write|prepare|give me)\s+(?:me\s+)?(?:a|an)\s+(?:new\s+)?"
+                 r"((?:excel|word|google)?\s*(?:spreadsheet|sheet|workbook|document|doc|text file|notes? file|table))\s+"
+                 r"(?:of|with|listing|that lists|about|containing|on|for)\s+(.+)$", s, re.I)
+    if m and FACTS_RE.search(m.group(2)):
+        word = m.group(1)
+        kind = "xlsx" if re.search(r"excel|spreadsheet|sheet|workbook|table", word, re.I) else _kind(word)
+        return {"kind": kind, "name": None, "research": m.group(2).strip(" ."), "summary": True}
+    return None
 
 def research_query(text):
     """'can you open up forbes and looks for the top 20 richest people' -> ('forbes', 'forbes top 20 richest people')."""
@@ -158,7 +199,7 @@ def research_query(text):
     m = re.match(r"^(?:open(?: up)?|go (?:to|on)|visit|use|check)\s+(?:the\s+)?([a-z0-9.\-]+?)(?:\.com)?(?:\s+(?:website|site))?\s*(?:,|and|then)\s*(.+)$", t, re.I)
     if m and (m.group(1).lower() in SITES or "." in m.group(1)):
         site, t = m.group(1).lower(), m.group(2)
-    t = re.sub(r"^(?:(?:please|can you|could you)\s+)?(?:look(?:s|ing)?\s+(?:for|up)|search(?:\s+for)?|find|get|research|check)\s+(?:the\s+)?", "", t, flags=re.I)
+    t = re.sub(r"^(?:(?:please|can you|could you)\s+)?(?:look(?:s|ing)?\s+(?:for|up)|search(?:\s+for)?|find|get|research|check|list|make|write|show|put|type|add)\s+(?:out\s+)?(?:the\s+)?", "", t, flags=re.I)
     q = (site + " " if site else "") + t.strip(" .?")
     return site, q
 

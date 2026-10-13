@@ -1185,3 +1185,72 @@ class V127Agent(unittest.TestCase):
         res, client, op, d = self.go(no_window=True)
         self.assertIn("Saved 20 rows", res)
         self.assertIn("new_tab", [c for c, a in self.ext.calls])
+
+XL_TASK = ("Open Excel, create a new sheet, and list the top 20 richest people in the world along with their net worth. "
+           "Verify the information from a reliable source before finalizing the sheet.")
+class V128AppFirst(unittest.TestCase):
+    def test_exact_sentence(self):
+        o = _intents.output_request(XL_TASK)
+        self.assertEqual((o["kind"], o["research"]), ("xlsx", "list the top 20 richest people in the world along with their net worth"))
+        self.assertEqual(_intents.research_query(o["research"]), (None, "top 20 richest people in the world along with their net worth"))
+        self.assertEqual(_intents.requested_count(XL_TASK), 20); self.assertTrue(_intents.is_web_task(XL_TASK))
+    def test_variants(self):
+        cases = {"open word and write a summary of the latest iphone news": "docx",
+                 "open notepad, make a new note and list the top 5 tallest buildings": "txt",
+                 "can you open microsoft excel and make a list of the top 10 fastest cars": "xlsx",
+                 "make an excel spreadsheet of the top 10 laptops of 2026": "xlsx",
+                 "create a word document about the history of the internet": "docx",
+                 "look up the top 10 richest people and put them in an excel sheet": "xlsx",
+                 "find the latest apple news and save it in a word document": "docx",
+                 "search for the top 5 tallest buildings and put it in a text file": "txt"}
+        for t, k in cases.items():
+            o = _intents.output_request(t); self.assertIsNotNone(o, t); self.assertEqual(o["kind"], k, t)
+        for t in ("open excel", "open word and type hello", "open notepad", "open excel and create a new sheet"):
+            self.assertIsNone(_intents.output_request(t), t)
+
+class V128Agent(V127Agent):
+    def test_excel_sentence_makes_xlsx(self):
+        import extlink, time, tempfile, docmaker
+        self.link = extlink.ExtensionLink(); self.ext = ForbesFake(self.link); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            time.sleep(0.01)
+        self.ext.snap_orig = self.ext.snap
+        def snap():
+            s = self.ext.snap_orig()
+            if "google" in self.ext.url:
+                s["elements"] = [{"id": "8", "role": "link", "label": "Some Blog Top Rich People", "href": "https://randomblog.example/rich"},
+                                 {"id": "9", "role": "link", "label": "Forbes Real Time Billionaires", "href": "https://www.forbes.com/real-time-billionaires/"}]
+            return s
+        self.ext.snap = snap
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 10, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        client = mock.MagicMock()
+        rows = [[f"Person{i}", f"${300-i}B"] for i in range(1, 21)]
+        client.text_chat.return_value = json.dumps({"title": "Top 20 Richest", "summary": "s", "columns": ["Name", "Net Worth"], "rows": rows})
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
+        d = tempfile.mkdtemp()
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"), mock.patch.object(docmaker, "out_dir", return_value=d), \
+             mock.patch.object(docmaker, "open_file", return_value=True) as op:
+            res = a.run(XL_TASK)
+        path = os.path.join(d, "Top 20 Richest.xlsx"); self.assertTrue(os.path.exists(path), res); op.assert_called_once_with(path)
+        import openpyxl; ws = openpyxl.load_workbook(path).active
+        vals = [r for r in ws.iter_rows(values_only=True)]
+        self.assertIn("Source: https://www.forbes.com/real-time-billionaires/", [v[0] for v in vals])
+        self.assertEqual(sum(1 for v in vals if v[0] and str(v[0]).startswith("Person")), 20)
+        client.chat.assert_not_called()
+
+class V128SameClick(unittest.TestCase):
+    def test_same_click_three_times_stops(self):
+        client = mock.MagicMock(); client.chat.return_value = '{"action":"click","x":676,"y":919}'
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 10, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        ex = mock.MagicMock()
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex, dom=False)
+        a.kill.start = lambda: None
+        with mock.patch.object(a, "use_extension", return_value=False), mock.patch("extlink.LINK.connected", return_value=False):
+            res = a.run("click the cell in the spreadsheet app")
+        self.assertIn("same spot (676,919) 3 times", res); self.assertEqual(client.chat.call_count, 3)

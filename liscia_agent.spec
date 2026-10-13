@@ -2,7 +2,7 @@
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 MAC, WIN = sys.platform == "darwin", sys.platform.startswith("win")
-VERSION = "1.2.7"
+VERSION = "1.2.8"
 
 hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "docx", "openpyxl"]
 hidden += [m for m in collect_submodules("pynput") if ("_darwin" in m if MAC else "_win32" in m if WIN else "_xorg" in m) or m.count(".") <= 1]
