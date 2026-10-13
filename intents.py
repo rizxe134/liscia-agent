@@ -11,7 +11,9 @@ APP_NAMES = {**BROWSER_NAMES, "notes": "Notes", "mail": "Mail", "messages": "Mes
              "music": "Music", "calendar": "Calendar", "terminal": "Terminal", "settings": "System Settings",
              "system settings": "System Settings", "spotify": "Spotify", "slack": "Slack", "vs code": "Visual Studio Code",
              "vscode": "Visual Studio Code", "photos": "Photos", "maps": "Maps", "app store": "App Store"}
-SITES = {"youtube": "https://www.youtube.com", "hulu": "https://www.hulu.com", "disney+": "https://www.disneyplus.com",
+SITES = {"forbes": "https://www.forbes.com", "bloomberg": "https://www.bloomberg.com", "cnn": "https://www.cnn.com",
+         "bbc": "https://www.bbc.com", "espn": "https://www.espn.com", "imdb": "https://www.imdb.com", "nytimes": "https://www.nytimes.com",
+         "youtube": "https://www.youtube.com", "hulu": "https://www.hulu.com", "disney+": "https://www.disneyplus.com",
          "disney plus": "https://www.disneyplus.com", "twitch": "https://www.twitch.tv", "tiktok": "https://www.tiktok.com",
          "pinterest": "https://www.pinterest.com", "ebay": "https://www.ebay.com", "bing": "https://www.bing.com",
          "outlook": "https://outlook.live.com", "drive": "https://drive.google.com", "maps": "https://maps.google.com", "google": "https://www.google.com", "gmail": "https://mail.google.com",
@@ -126,7 +128,43 @@ def named_browser(task):
     return BROWSER_NAMES.get(m.group(1).lower()) if m else None
 
 def is_web_task(task):
-    return bool(WEB_RE.search(fix_typos(task or "")))
+    t = fix_typos(task or "")
+    return bool(WEB_RE.search(t)) or (output_request(t) is not None and bool(RESEARCH_RE.search(t)))
+
+OUTPUT_RE = re.compile(r"(?:,?\s*(?:and|then)\s+)?(?:(?:summari[sz]e|sumarize|summrize|summerize)\s+(?:it|them|that|this)?\s*(?:and\s+)?)?"
+                       r"(?:put|save|write|make|create|export|turn|place|store|add|type)\s+(?:it|them|that|this|the (?:results?|list|data|info(?:rmation)?)|everything|a)?\s*"
+                       r"(?:in|into|to|as|on)?\s*(?:a|an|the|my|new)?\s*"
+                       r"(word\s*(?:doc(?:ument)?|file)?|docx|document|doc|excel(?:\s+(?:file|sheet|spreadsheet))?|spreadsheet|sheet|xlsx|csv|"
+                       r"text\s*file|txt|notes?\s*(?:file)?|notepad)\b(?:\s+(?:called|named)\s+['\"]?([\w \-]+?)['\"]?)?\s*[.!]*$", re.I)
+RESEARCH_RE = re.compile(r"\b(look(?:s|ing)? (?:for|up)|find|search|research|get|top \d+|list|richest|best|latest|news|prices?|open(?: up)?|go to|from)\b", re.I)
+
+def output_request(task):
+    """'... and summarize and put it in a word document' -> {"kind": "docx", "name": None, "research": "<the rest>", "summary": True}."""
+    t = fix_typos(task or "").strip()
+    m = OUTPUT_RE.search(t)
+    if not m: return None
+    word = m.group(1).lower()
+    kind = "docx" if re.match(r"word|docx|document|doc$", word) else "xlsx" if re.match(r"excel|spreadsheet|sheet|xlsx|csv", word) else "txt"
+    research = t[:m.start()].strip(" ,.")
+    research = re.sub(r"(?:,?\s*(?:and|then)\s+)?(?:summari[sz]e|summrize|summerize|sumarize)(?:\s+(?:it|them|that|this))?\s*$", "", research, flags=re.I).strip(" ,.")
+    if not research: return None
+    return {"kind": kind, "name": (m.group(2) or "").strip() or None, "research": research,
+            "summary": bool(re.search(r"summ?[ae]?r", t[m.start() - 30 if m.start() > 30 else 0:], re.I)) or True}
+
+def research_query(text):
+    """'can you open up forbes and looks for the top 20 richest people' -> ('forbes', 'forbes top 20 richest people')."""
+    t = re.sub(r"^(?:(?:hey|ok|okay|please|can you|could you|would you|will you|pls)\s+)+", "", fix_typos(text).strip(), flags=re.I)
+    site = None
+    m = re.match(r"^(?:open(?: up)?|go (?:to|on)|visit|use|check)\s+(?:the\s+)?([a-z0-9.\-]+?)(?:\.com)?(?:\s+(?:website|site))?\s*(?:,|and|then)\s*(.+)$", t, re.I)
+    if m and (m.group(1).lower() in SITES or "." in m.group(1)):
+        site, t = m.group(1).lower(), m.group(2)
+    t = re.sub(r"^(?:(?:please|can you|could you)\s+)?(?:look(?:s|ing)?\s+(?:for|up)|search(?:\s+for)?|find|get|research|check)\s+(?:the\s+)?", "", t, flags=re.I)
+    q = (site + " " if site else "") + t.strip(" .?")
+    return site, q
+
+def requested_count(text):
+    m = re.search(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:richest|best|biggest|largest|top)\b", text or "", re.I)
+    return int(m.group(1) or m.group(2)) if m else None
 
 TYPOS = {"claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
          "serach": "search", "seach": "search", "saerch": "search", "searh": "search", "sreach": "search", "serch": "search",
@@ -256,3 +294,22 @@ def goal_reached(task, url):
     if re.search(r"\b(first|1st|top)\b.*\b(video|result)\b|\bplay\b", t) and "youtube.com/watch" in u:
         return True
     return False
+
+
+SEARCH_HOSTS = re.compile(r"(^|\.)(google\.[a-z.]+|youtube\.com|bing\.com|duckduckgo\.com)$")
+
+def safe_url(url, known=()):
+    """Never open invented deep links: homepages, search URLs and links seen on the page are fine;
+    anything else becomes a Google site search."""
+    import urllib.parse
+    u = urllib.parse.urlparse(url if re.match(r"^[a-z]+://", url or "", re.I) else "https://" + (url or ""))
+    host = u.netloc.lower()
+    if not host: return url
+    path = (u.path or "/").rstrip("/")
+    if not path or SEARCH_HOSTS.search(host.split(":")[0]) and (path in ("/search", "/results") or path == ""): return url
+    if SEARCH_HOSTS.search(host): return url
+    norm = lambda x: re.sub(r"^https?://(www\.)?", "", (x or "").split("#")[0]).rstrip("/").lower()
+    if any(norm(k) == norm(url) or (norm(k) and norm(url).startswith(norm(k)) and len(norm(k).split("/")) > 1) for k in known if k):
+        return url
+    words = " ".join(w for w in re.split(r"[/\-_.?=&]+", path + " " + (u.query or "")) if w and not w.isdigit())
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(f"site:{re.sub(r'^www[.]', '', host)} {words}".strip())

@@ -992,7 +992,8 @@ class V125Answers(unittest.TestCase):
         res = webagent.run_web(ag, "who is the richest person", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
         self.assertEqual(res, "Elon Musk is the richest.")
         navs = [a["url"] for c, a in self.ext.calls if c == "navigate"]
-        self.assertEqual(navs.count("https://www.forbes.com/top-rich-list"), 1)
+        self.assertEqual(navs.count("https://www.forbes.com/top-rich-list"), 0)  # made-up deep link -> Google site search
+        self.assertTrue(any("site%3Aforbes.com" in n for n in navs), navs)
         self.assertEqual(navs.count("https://www.google.com/search?q=x"), 2)
         self.assertNotIn("click", [c for c, a in self.ext.calls])
         prompt = client.text_chat.call_args_list[0][0][0][1]["content"]
@@ -1097,3 +1098,90 @@ class V126Agent(unittest.TestCase):
         res = webagent.run_web(ag, "open Hulu in the browser", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
         self.assertTrue(res.startswith("done: opened"), res); ag.confirm.assert_called_once()
         self.assertNotIn("click", self.ext.calls)
+
+
+DOC_TASK = "can you open up forbes and looks for the top 20 richest people and summrize and put it in a word document"
+class V127Docs(unittest.TestCase):
+    def test_parse_mixed_task(self):
+        o = _intents.output_request(DOC_TASK)
+        self.assertEqual((o["kind"], o["research"]), ("docx", "can you open up forbes and looks for the top 20 richest people"))
+        self.assertEqual(_intents.research_query(o["research"]), ("forbes", "forbes top 20 richest people"))
+        self.assertEqual(_intents.requested_count(DOC_TASK), 20); self.assertTrue(_intents.is_web_task(DOC_TASK))
+        self.assertEqual(_intents.output_request("find laptop deals and save them in an excel spreadsheet")["kind"], "xlsx")
+        self.assertEqual(_intents.output_request("search for pasta recipes and put it in a text file")["kind"], "txt")
+        self.assertIsNone(_intents.output_request("open word")); self.assertIsNone(_intents.output_request("search youtube for lofi"))
+    def test_safe_url(self):
+        self.assertEqual(_intents.safe_url("https://www.forbes.com"), "https://www.forbes.com")
+        self.assertEqual(_intents.safe_url("https://www.google.com/search?q=x"), "https://www.google.com/search?q=x")
+        self.assertIn("google.com/search?q=site%3Aforbes.com+top+rich+list", _intents.safe_url("https://www.forbes.com/top-rich-list"))
+        self.assertEqual(_intents.safe_url("https://www.forbes.com/real-time-billionaires/", ["https://www.forbes.com/real-time-billionaires/"]),
+                         "https://www.forbes.com/real-time-billionaires/")
+    def test_search_url_is_google(self):
+        self.assertTrue(search_url("a b").startswith("https://www.google.com/search?q=a+b"))
+    def test_make_documents(self):
+        import docmaker, tempfile, zipfile
+        rows = [[str(i), f"Person {i}", f"${300-i}B"] for i in range(1, 21)]
+        with tempfile.TemporaryDirectory() as d:
+            p = docmaker.make("docx", "Top 20 Richest", "Summary here.", ["Rank", "Name", "Net worth"], rows, "https://forbes.com/x", folder=d)
+            from docx import Document
+            doc = Document(p); t = doc.tables[0]
+            self.assertEqual(len(t.rows), 21); self.assertEqual(t.rows[20].cells[1].text, "Person 20")
+            body = "\n".join(x.text for x in doc.paragraphs); self.assertIn("Source: https://forbes.com/x", body); self.assertIn("Date:", body)
+            x = docmaker.make("xlsx", "Top 20 Richest", "s", ["Rank", "Name"], rows, folder=d)
+            import openpyxl; ws = openpyxl.load_workbook(x).active; self.assertEqual(ws.max_row, 4 + 1 + 20)
+            t2 = docmaker.make("txt", "Top/20?", "s", ["Rank"], rows, folder=d); self.assertTrue(t2.endswith("Top20.txt"))
+            self.assertTrue(p.endswith("Top 20 Richest.docx")); self.assertTrue(docmaker.make("docx", "Top 20 Richest", folder=d).endswith("(2).docx"))
+
+class ForbesFake(FakeExt):
+    def __init__(self, link, no_window=False):
+        self.no_window = no_window; super().__init__(link)
+    def snap(self):
+        if "google" in self.url:
+            els = [{"id": "1", "role": "link", "label": "Privacy", "href": "https://policies.google.com/privacy"},
+                   {"id": "2", "role": "link", "label": "Forbes Real-Time Billionaires List", "href": "https://www.forbes.com/real-time-billionaires/"}]
+        else: els = []
+        return {"url": self.url, "title": "x", "elements": els, "dialogs": [], "text": "", "scroll": [0, 100], "status": 200}
+    def loop(self):
+        while not self.stop:
+            for c in self.link.poll({"version": "test"}, hold=0.05):
+                self.calls.append((c["cmd"], c["args"])); a = c["args"]; r = {"id": c["id"], "ok": True, "result": {}}
+                if c["cmd"] == "snapshot": r["result"] = self.snap()
+                elif c["cmd"] == "navigate":
+                    if self.no_window: r = {"id": c["id"], "ok": False, "error": "no active tab"}; self.no_window = False
+                    else: self.url = a["url"]
+                elif c["cmd"] == "new_tab": self.url = a["url"]
+                elif c["cmd"] == "extract_text":
+                    r["result"] = {"text": " ".join(f"{i} Person{i} ${300-i}B" for i in range(1, 30)) if "forbes" in self.url else "results"}
+                self.link.result(r)
+
+class V127Agent(unittest.TestCase):
+    def go(self, no_window=False):
+        import extlink, time, tempfile, docmaker
+        self.link = extlink.ExtensionLink(); self.ext = ForbesFake(self.link, no_window); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            time.sleep(0.01)
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 10, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        client = mock.MagicMock()
+        rows = [[str(i), f"Person{i}", f"${300-i}B"] for i in range(1, 21)]
+        client.text_chat.return_value = json.dumps({"title": "Top 20 Richest People", "summary": "Musk leads.", "columns": ["Rank", "Name", "Net worth"], "rows": rows})
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
+        d = tempfile.mkdtemp()
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"), mock.patch.object(docmaker, "out_dir", return_value=d), \
+             mock.patch.object(docmaker, "open_file", return_value=True) as op:
+            res = a.run(DOC_TASK)
+        return res, client, op, d
+    def test_user_sentence_makes_docx(self):
+        res, client, op, d = self.go()
+        self.assertIn("Saved 20 rows", res); self.assertIn("Person1, Person2", res)
+        path = os.path.join(d, "Top 20 Richest People.docx"); self.assertTrue(os.path.exists(path)); op.assert_called_once_with(path)
+        navs = [a["url"] for c, a in self.ext.calls if c in ("navigate", "new_tab")]
+        self.assertEqual(navs, ["https://www.google.com/search?q=forbes+top+20+richest+people", "https://www.forbes.com/real-time-billionaires/"])
+        client.chat.assert_not_called()  # never vision
+    def test_no_window_opens_new_tab(self):
+        res, client, op, d = self.go(no_window=True)
+        self.assertIn("Saved 20 rows", res)
+        self.assertIn("new_tab", [c for c, a in self.ext.calls])

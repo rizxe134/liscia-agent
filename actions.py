@@ -103,7 +103,7 @@ def is_risky(a, words):
     return False
 
 def search_url(q):
-    return "https://duckduckgo.com/?q=" + urllib.parse.quote_plus(q)
+    return "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
 
 def _default_runner(cmd):
     import subprocess

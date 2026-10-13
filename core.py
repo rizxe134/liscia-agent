@@ -206,8 +206,71 @@ class Agent:
             top = webagent.top_result(snap)
             if not top: break
             self.log(f"[web] not enough on the results page - opening \"{top['label'][:60]}\"")
-            link.call("navigate", timeout=25, url=top["href"]); time.sleep(1.5)
+            webagent.nav(link, top["href"], self.log); time.sleep(1.5)
         return "I searched but couldn't find a clear answer on the page."
+
+    EXTRACT_SYSTEM = ("You turn web page text into a document. Today is {today}. Use ONLY facts in the text. Reply with ONE JSON object: "
+                      '{{"title": "<short title>", "summary": "<3-6 sentence summary answering the request>", '
+                      '"columns": ["Rank", "Name", ...], "rows": [["1", "...", ...], ...]}}. '
+                      "Include up to {n} rows if the text has them, in the page's order. No rows if the request isn't a list.")
+
+    def extract_data(self, request, text, url, n):
+        import webagent
+        sys_p = self.EXTRACT_SYSTEM.format(today=webagent.today(), n=n or 25)
+        raw = self.client.text_chat([{"role": "system", "content": sys_p},
+                                     {"role": "user", "content": f"REQUEST: {request}\nPAGE ({url[:120]}):\n{text}"}],
+                                    json_mode=True, num_predict=self.cfg["agent"].get("extract_tokens", 1400))
+        try:
+            obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+        except ValueError:
+            return {"title": request, "summary": (raw or "").strip()[:2000], "columns": [], "rows": []}
+        rows = [r if isinstance(r, list) else list(r.values()) if isinstance(r, dict) else [r] for r in (obj.get("rows") or [])]
+        cols = obj.get("columns") or []
+        if not cols and rows and isinstance((obj.get("rows") or [None])[0], dict): cols = list(obj["rows"][0].keys())
+        return {"title": str(obj.get("title") or request), "summary": str(obj.get("summary") or ""), "columns": [str(c) for c in cols],
+                "rows": rows[: n or len(rows)]}
+
+    def research_to_document(self, task, out, logf):
+        """Web research through the extension, then a local .docx/.xlsx/.txt with the results (opened in the default app)."""
+        import webagent, docmaker, urllib.parse
+        link = self.link(); intents.note_app("Google Chrome"); self.focus_chrome()
+        site, q = intents.research_query(out["research"]); n = intents.requested_count(task)
+        t0 = time.time()
+        search = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
+        webagent.nav(link, search, self.log); time.sleep(1.5)
+        logf.write(json.dumps({"web_fast": {"action": "open_url", "url": search}}) + "\n")
+        snap = link.call("snapshot", max=80)
+        results_text = webagent.main_text(link, 3000)
+        pick = None
+        for e in snap.get("elements") or []:
+            h = e.get("href") or ""
+            if site and e.get("role") == "link" and h.startswith("http") and site in webagent.host(h) and len((e.get("label") or "").split()) >= 2:
+                pick = e; break
+        pick = pick or webagent.top_result(snap)
+        text, url = results_text, snap.get("url", search)
+        if pick:
+            self.log(f"[web] opening \"{pick['label'][:70]}\"")
+            webagent.nav(link, pick["href"], self.log); time.sleep(3.0)
+            try:
+                link.call("scroll", timeout=12, direction="down", wait_lazy=True); link.call("scroll", timeout=12, direction="up", amount=-100000)
+            except Exception: pass
+            try:
+                page = webagent.main_text(link, self.cfg["agent"].get("doc_chars", 9000))
+                if len(page) > 400: text, url = page, link.call("snapshot", max=5).get("url", pick["href"])
+            except Exception as e:
+                self.log(f"[web] couldn't read {pick['href'][:60]}: {e}")
+        logf.write(json.dumps({"read": url, "chars": len(text)}) + "\n")
+        self.log(f"[web] extracting data from {url[:80]} ({len(text)} chars)")
+        data = self.extract_data(out["research"], text, url, n)
+        if n and len(data["rows"]) < min(n, 5) and text is not results_text:
+            data2 = self.extract_data(out["research"], results_text, search, n)
+            if len(data2["rows"]) > len(data["rows"]): data, url = data2, search
+        path = docmaker.make(out["kind"], out.get("name") or data["title"], data["summary"], data["columns"], data["rows"], source=url)
+        opened = docmaker.open_file(path)
+        logf.write(json.dumps({"document": path, "rows": len(data["rows"]), "opened": opened, "secs": round(time.time() - t0, 1)}) + "\n")
+        names = ", ".join(str(r[1] if len(r) > 1 else r[0]) for r in data["rows"][:5])
+        return (f"Saved {len(data['rows'])} rows to {path}" + (" (opened)" if opened else "") + "\n\n" + data["summary"] +
+                (f"\n\nFirst entries: {names}" if names else ""))
 
     def run_via_extension(self, task, history, logf):
         """Deterministic steps through the extension (navigate / YouTube search / first video), then webagent."""
@@ -221,7 +284,7 @@ class Agent:
                 if act["app"] in intents.BROWSERS_SET: done.append("open Google Chrome (done)"); continue
                 rest = " and ".join([f"open {act['app']}"] + ([rest] if rest else [])); raise NeedsVision("non-browser app in task")
             if act["action"] == "open_url":
-                res = link.call("navigate", timeout=25, url=act["url"]) or {}
+                res = webagent.nav(link, act["url"], self.log)
                 self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
             elif act["action"] == "answer_from_page":
                 logf.write(json.dumps({"web_fast": act}) + "\n")
@@ -305,6 +368,14 @@ class Agent:
         orig_task = task
         self.kill.start(); self.log(f"Task: {task}\nRun folder: {run_dir}\nAbort: Esc/F12, STOP, or slam mouse into a screen corner.")
         intents.STATE["named"] = intents.named_browser(task)
+        out = intents.output_request(task)
+        if out and self.cfg["agent"].get("chrome_extension", True) and self.link().connected():
+            try:
+                result = self.research_to_document(task, out, logf)
+            except Exception as e:
+                result = f"stopped: couldn't finish the research/document task ({type(e).__name__}: {e})"
+                logf.write(json.dumps({"doc_error": str(e)}) + "\n")
+            self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
         # 0) web task + Chrome extension connected: do it all through the extension (no screenshots)
         if self.use_extension(task):
             try:
@@ -432,6 +503,8 @@ class Agent:
                 if act["action"] == "done":
                     result = act.get("summary", "done"); logf.write(json.dumps(entry) + "\n"); break
                 act = self.fix_browser(act)
+                if act["action"] == "open_url" and act.get("url"):
+                    act["url"] = intents.safe_url(act["url"])
                 logged = {k: ("***" if k == "text" and act.get("sensitive") else v) for k, v in act.items() if k not in ("thought", "reason")}
                 if act["action"] in ("open_app", "open_url"):
                     key = act["action"] + ":" + str(act.get("app") or act.get("url") or "").rstrip("/").lower()

@@ -93,6 +93,27 @@ def main_text(link, max_chars=3500):
     res = link.call("extract_text", timeout=20, max=max_chars * 2) or {}
     return " ".join((res.get("text") or "").split())[:max_chars]
 
+def nav(link, url, log=print, new_tab=False):
+    """Navigate; if Chrome has no window/active tab, open a new tab, else launch Chrome with the URL."""
+    try:
+        return link.call("new_tab" if new_tab else "navigate", timeout=25, url=url) or {}
+    except extlink.ExtError as e:
+        msg = str(e).lower()
+        if "not connected" in msg: raise
+        if not any(k in msg for k in ("no active tab", "no current window", "no window", "no tab")): raise
+        log(f"[web] Chrome has no open window - opening one for {url[:60]}")
+        try:
+            return link.call("new_tab", timeout=25, url=url) or {}
+        except extlink.ExtError:
+            launch_chrome(url); time.sleep(4.0)
+            return {"url": url, "launched": True}
+
+def launch_chrome(url):
+    import subprocess, sys
+    if sys.platform.startswith("win"): subprocess.Popen(["cmd", "/c", "start", "", "chrome", url], shell=False)
+    elif sys.platform == "darwin": subprocess.Popen(["open", "-a", "Google Chrome", url])
+    else: subprocess.Popen(["google-chrome", url])
+
 def host(u):
     return re.sub(r"^www\.", "", re.sub(r"^https?://", "", u or "").split("/")[0].lower())
 
@@ -172,7 +193,7 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         import intents
         site = next((u for k, u in intents.SITES.items() if re.search(r"\b" + re.escape(k) + r"\b", (task or "").lower())), "https://www.google.com")
         agent.log(f"[web] can't read this tab ({str(e)[:60]}); opening {site}")
-        link.call("navigate", timeout=25, url=site); sleep(1.0); snap = link.call("snapshot")
+        nav(link, site, agent.log); sleep(1.0); snap = link.call("snapshot")
     agent.log(f"[web] page: {snap.get('title','')[:60]} | {snap.get('url','')[:90]} ({len(snap.get('elements') or [])} elements)")
     from core import LoopGuard
     guard = LoopGuard(2, 3, 5); bad = 0; notes = []; scrolls = 0; no_change = 0
@@ -229,6 +250,12 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             history.append(f"web{step}: {json.dumps(shown)} -> BLOCKED: you already did exactly this twice")
             notes.append("Do NOT repeat that action again. Choose something different" + (", or read_page and answer." if info else "."))
             logf.write(json.dumps(dict(entry, blocked="repeat")) + "\n"); continue
+        if act["action"] in ("navigate", "new_tab"):
+            known = [snap.get("url")] + [e.get("href") for e in snap.get("elements") or [] if e.get("href")]
+            fixed = intents.safe_url(act["url"], known)
+            if fixed != act["url"]:
+                history.append(f"web{step}: {act['url']} is not a link on the page (made-up URL) -> searching Google instead")
+                agent.log(f"[web] not opening made-up URL {act['url'][:80]} - using {fixed[:80]}"); act["url"] = fixed
         if act["action"] in ("navigate", "new_tab") and act["url"].rstrip("/") in dead_urls:
             history.append(f"web{step}: navigate {act['url']} -> BLOCKED: that URL returned 404 before; don't invent URLs, use search results")
             logf.write(json.dumps(dict(entry, blocked="404")) + "\n"); continue
@@ -271,7 +298,8 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         try:
             args = {k: v for k, v in act.items() if k not in ("action", "thought", "reason", "auto")}
             if act["action"] == "scroll": scrolls += 1; args.setdefault("wait_lazy", True)
-            res = link.call(act["action"], timeout=25, **args)
+            res = nav(link, args["url"], agent.log, new_tab=act["action"] == "new_tab") if act["action"] in ("navigate", "new_tab") \
+                else link.call(act["action"], timeout=25, **args)
             entry["result"] = res
         except extlink.ExtError as e:
             history.append(f"web{step}: {json.dumps(shown)}{target} -> FAILED: {e}")

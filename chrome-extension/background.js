@@ -78,7 +78,13 @@ async function run(cmd, a) {
   if (cmd === "navigate" || cmd === "new_tab") {
     let url = String(a.url || ""); if (!/^[a-z]+:/i.test(url)) url = "https://" + url;
     if (!/^https?:/i.test(url)) throw new Error("only http(s) URLs");
-    const tab = cmd === "new_tab" ? await chrome.tabs.create({url, active: true}) : await chrome.tabs.update((await activeTab()).id, {url});
+    let cur = null; try { cur = cmd === "new_tab" ? null : await activeTab(); } catch (e) { cur = null; }
+    let tab;
+    if (cur) tab = await chrome.tabs.update(cur.id, {url});
+    else {  // no window / no active tab (Chrome running in the background): open a new tab, or a new window
+      try { tab = await chrome.tabs.create({url, active: true}); }
+      catch (e) { const w = await chrome.windows.create({url, focused: true}); tab = w.tabs[0]; }
+    }
     await waitLoaded(tab.id); const t = await chrome.tabs.get(tab.id); return {url: t.url, title: t.title, tabId: t.id};
   }
   if (cmd === "back") { const t = await activeTab(); await chrome.tabs.goBack(t.id); await waitLoaded(t.id, 6000); return {ok: true}; }
