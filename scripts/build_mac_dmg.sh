@@ -3,15 +3,16 @@
 # Usage: scripts/build_mac_dmg.sh   -> dist/Liscia-Agent-<ver>-macos-arm64.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VER="${VERSION:-1.1.0}"
+VER="${VERSION:-1.1.1}"
 PY="${PYTHON:-python3}"
 [ -d build/venv ] || "$PY" -m venv build/venv
 build/venv/bin/pip install -q -r requirements.txt pyinstaller
 # icon.png -> AppIcon.icns
+SRC=icon_mac.png; [ -f "$SRC" ] || SRC=icon.png
 SET=build/AppIcon.iconset; rm -rf "$SET"; mkdir -p "$SET"
 for s in 16 32 128 256 512; do
-  sips -z $s $s icon.png --out "$SET/icon_${s}x${s}.png" >/dev/null
-  sips -z $((s*2)) $((s*2)) icon.png --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
+  sips -z $s $s "$SRC" --out "$SET/icon_${s}x${s}.png" >/dev/null
+  sips -z $((s*2)) $((s*2)) "$SRC" --out "$SET/icon_${s}x${s}@2x.png" >/dev/null
 done
 iconutil -c icns "$SET" -o build/AppIcon.icns
 rm -rf "dist/Liscia Agent.app" "dist/Liscia Agent"
