@@ -536,3 +536,109 @@ class Rename(unittest.TestCase):
     def test_extension_manifest(self):
         m = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chrome-extension", "manifest.json")))
         self.assertIn("Liscia", m["name"]); self.assertEqual(set(m["icons"]), {"16", "32", "48", "128"})
+
+class FakeExt(threading.Thread if False else object):
+    """A mocked extension: polls an ExtensionLink and answers commands with a tiny fake page."""
+    def __init__(self, link):
+        import threading
+        self.link, self.calls, self.stop = link, [], False
+        self.url, self.typed = "https://www.youtube.com/", ""
+        self.t = threading.Thread(target=self.loop, daemon=True); self.t.start()
+    def snap(self):
+        els = [{"id": "1", "role": "searchbox", "label": "Search", "value": self.typed}, {"id": "2", "role": "button", "label": "Search"}]
+        if "results" in self.url: els.append({"id": "7", "role": "link", "label": "Embrace It (Official Video)", "href": "https://www.youtube.com/watch?v=x"})
+        return {"url": self.url, "title": "YouTube", "elements": els, "dialogs": [], "text": "YouTube", "scroll": [0, 100]}
+    def loop(self):
+        while not self.stop:
+            for c in self.link.poll({"version": "test"}, hold=0.05):
+                self.calls.append(c["cmd"]); a = c["args"]
+                if c["cmd"] == "snapshot": r = {"id": c["id"], "ok": True, "result": self.snap()}
+                elif c["cmd"] == "type": self.typed = a["text"]; self.url = "https://www.youtube.com/results?search_query=" + a["text"].replace(" ", "+") if a.get("press_enter") else self.url; r = {"id": c["id"], "ok": True, "result": {}}
+                elif c["cmd"] == "click" and a["id"] == "7": self.url = "https://www.youtube.com/watch?v=x"; r = {"id": c["id"], "ok": True, "result": {"clicked": "Embrace It"}}
+                elif c["cmd"] == "navigate": self.url = a["url"]; r = {"id": c["id"], "ok": True, "result": {"title": "YouTube"}}
+                elif c["cmd"] == "first_video": self.url = "https://www.youtube.com/watch?v=x"; r = {"id": c["id"], "ok": True, "result": {"clicked": "Embrace It"}}
+                else: r = {"id": c["id"], "ok": False, "error": "nope"}
+                self.link.result(r)
+
+import threading
+class ExtensionChannel(unittest.TestCase):
+    def setUp(self):
+        import extlink
+        self.link = extlink.ExtensionLink(); self.ext = FakeExt(self.link); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            import time; time.sleep(0.01)
+    def test_roundtrip_and_status(self):
+        self.assertTrue(self.link.connected())
+        self.assertEqual(self.link.call("snapshot", timeout=3)["url"], "https://www.youtube.com/")
+        import extlink
+        with self.assertRaises(extlink.ExtError): self.link.call("bogus", timeout=3)
+        st = self.link.status(); self.assertTrue(st["connected"]); self.assertEqual(st["extension"]["version"], "test")
+    def test_not_connected(self):
+        import extlink
+        l = extlink.ExtensionLink()
+        with self.assertRaises(extlink.ExtError): l.call("snapshot", timeout=0.1)
+    def test_web_loop_search_and_click(self):
+        import webagent
+        client = mock.MagicMock(); client.text_chat.side_effect = [
+            '{"thought":"type query","action":"type","id":"1","text":"embrace it","press_enter":true}',
+            '{"thought":"first result","action":"click","id":"7"}']
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False
+        ag.cfg = {"safety": {"confirm_risky": True, "risky_words": ["buy"]}}; logs = []; ag.log = logs.append
+        res = webagent.run_web(ag, "search youtube for embrace it and play the first video", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
+        self.assertTrue(res.startswith("done: goal reached"), res)
+        self.assertEqual([c for c in self.ext.calls if c != "snapshot"], ["type", "click"])
+        self.assertTrue(any("Embrace It" in l for l in logs))
+        ag.confirm.assert_not_called()
+    def test_web_loop_risky_needs_confirm(self):
+        import webagent
+        self.ext.snap = lambda: {"url": "https://shop/", "title": "Shop", "elements": [{"id": "3", "role": "button", "label": "Buy now"}], "dialogs": []}
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"click","id":"3"}', '{"action":"done","summary":"stopped"}']
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.confirm.return_value = False
+        ag.cfg = {"safety": {"confirm_risky": True, "risky_words": ["buy"]}}
+        self.assertEqual(webagent.run_web(ag, "buy it", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None), "stopped")
+        ag.confirm.assert_called_once(); self.assertNotIn("click", self.ext.calls)
+    def test_parse_web_actions(self):
+        import webagent
+        self.assertEqual(webagent.parse('{"action":"click_element","id":"[12]"}'), {"action": "click", "id": "12"})
+        self.assertEqual(webagent.parse('{"action":"press_enter"}')["key"], "Enter")
+        with self.assertRaises(ActionError): webagent.parse('{"action":"click"}')
+    def test_open_url_and_first_video_via_extension(self):
+        import extlink
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("actions.IS_MAC", True), \
+             mock.patch("intents.current_browser", return_value="Google Chrome"):
+            cmds = []; ex = Executor(gui=mock.Mock(), runner=cmds.append, sleep=lambda s: None)
+            ex.execute({"action": "open_url", "url": "https://www.youtube.com/results?search_query=x"})
+            ex.execute({"action": "first_video"})
+        self.assertEqual(cmds, [["open", "-a", "Google Chrome"]])
+        self.assertIn("navigate", self.ext.calls); self.assertIn("first_video", self.ext.calls); self.assertEqual(ex.last_info, "Embrace It")
+    def test_open_app_chrome_alias(self):
+        cmds = []
+        with mock.patch("actions.IS_MAC", True):
+            Executor(gui=mock.Mock(), runner=cmds.append, sleep=lambda s: None).execute({"action": "open_app", "app": "Chrome"})
+        self.assertEqual(cmds[0], ["open", "-a", "Google Chrome"])
+    def test_http_endpoints(self):
+        import server, json as j, urllib.request as ur
+        from http.server import ThreadingHTTPServer
+        br = server.Bridge({}, token="t" * 40)
+        br.link = self.link
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), server.make_handler(br)); threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        req = ur.Request(f"http://127.0.0.1:{srv.server_address[1]}/status", headers={"X-PCA-Token": "t" * 40})
+        st = j.loads(ur.urlopen(req, timeout=5).read())
+        self.assertTrue(st["extension"]["connected"])
+        req = ur.Request(f"http://127.0.0.1:{srv.server_address[1]}/ext/poll?hold=0.1", headers={"X-PCA-Token": "bad" * 14})
+        with self.assertRaises(ur.HTTPError): ur.urlopen(req, timeout=5)
+
+class AgentUsesExtension(ExtensionChannel):
+    def test_agent_routes_browser_task_to_extension(self):
+        import extlink
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"click","id":"2"}', '{"action":"done","summary":"clicked search"}']
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 4, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link
+        with mock.patch("intents.current_browser", return_value="Google Chrome"), mock.patch.object(extlink, "LINK", self.link):
+            self.assertEqual(a.run("press the search button on the page"), "clicked search")
+        client.chat.assert_not_called()  # no screenshots

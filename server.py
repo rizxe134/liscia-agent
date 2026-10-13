@@ -50,6 +50,8 @@ class Hub:
         if not p: return False
         p[1] = bool(ok); p[0].set(); return True
 
+BRIDGE = None  # the running bridge (so the chat app can mirror its narration to the panel)
+
 STEP_RE = re.compile(r"^\[(\d+|fast)\]\s+(\w+)\s*(.*)$")
 
 class Bridge:
@@ -58,6 +60,9 @@ class Bridge:
         self.history, self.busy, self.agent = [], False, None
         self.agent_factory, self.router = agent_factory, router
         self.lock = threading.Lock()
+        import extlink
+        self.link = extlink.LINK
+        global BRIDGE; BRIDGE = self
 
     def log(self, line):
         line = str(line); m = STEP_RE.match(line)
@@ -137,7 +142,16 @@ def make_handler(bridge):
         def do_GET(self):
             u = urlparse(self.path); qs = parse_qs(u.query)
             if not self._authed(qs): return self._send(401, {"error": "bad token"})
-            if u.path == "/health": return self._send(200, {"ok": True, "busy": bridge.busy})
+            if u.path == "/health":
+                return self._send(200, {"ok": True, "busy": bridge.busy, "extension_connected": bridge.link.connected(),
+                                        "panel_clients": len(bridge.hub.subs)})
+            if u.path == "/status":
+                return self._send(200, {"ok": True, "busy": bridge.busy, "panel_clients": len(bridge.hub.subs),
+                                        "extension": bridge.link.status()})
+            if u.path == "/ext/poll":
+                info = {k: v[0] for k, v in qs.items() if k in ("version", "ua", "client")}
+                hold = min(float((qs.get("hold") or ["20"])[0]), 25.0)
+                return self._send(200, {"commands": bridge.link.poll(info, hold=hold)})
             if u.path != "/events": return self._send(404, {"error": "not found"})
             self.send_response(200); self._cors()
             self.send_header("Content-Type", "text/event-stream"); self.send_header("Cache-Control", "no-cache")
@@ -163,6 +177,9 @@ def make_handler(bridge):
                 text = str(data.get("text", "")).strip()
                 if not text: return self._send(400, {"error": "empty"})
                 return self._send(200, {"accepted": bridge.chat(text), "busy": bridge.busy})
+            if p == "/ext/result": return self._send(200, {"ok": bridge.link.result(data)})
+            if p == "/ext/event":
+                bridge.link.event(data); return self._send(200, {"ok": True})
             if p == "/stop": bridge.stop(); return self._send(200, {"ok": True})
             if p == "/takeover": bridge.stop(takeover=True); return self._send(200, {"ok": True})
             if p == "/confirm": return self._send(200, {"ok": bridge.hub.answer(str(data.get("id")), data.get("ok") is True)})

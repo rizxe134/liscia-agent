@@ -134,9 +134,15 @@ class Executor:
         self.on_click = None  # optional hook(x_points, y_points) - side panel draws a highlight
 
     def _open(self, url, browser=None):
-        import intents
+        import intents, extlink
         if not browser and IS_MAC:
             browser = intents.current_browser()  # the app we're working in, not the system default
+        if browser == "Google Chrome" and extlink.LINK.connected():
+            intents.note_app(browser)
+            try: self.run_cmd(app_command(browser))  # bring Chrome to the front
+            except Exception: pass
+            res = extlink.LINK.call("navigate", timeout=25, url=url) or {}
+            self.last_info = (res.get("title") or "")[:60]; return
         if browser:
             intents.note_app(browser)
             self.run_cmd(app_command(browser, url))
@@ -145,8 +151,14 @@ class Executor:
 
     def first_video(self, timeout=12.0):
         """Click the first (non-ad) video on a YouTube page via the browser's JavaScript."""
-        import intents, browser_dom
+        import intents, browser_dom, extlink
         app = intents.current_browser() if IS_MAC else None
+        if app == "Google Chrome" and extlink.LINK.connected():
+            try:
+                res = extlink.LINK.call("first_video", timeout=20) or {}
+                self.last_info = (res.get("clicked") or "")[:80]; return
+            except extlink.ExtError as e:
+                raise NeedsVision(f"extension couldn't click the first video ({e})")
         if not app:
             raise NeedsVision("no scriptable browser in front")
         deadline = time.time() + timeout
@@ -201,8 +213,9 @@ class Executor:
             pass  # handled by the loop: next step uses a screenshot
         elif act == "open_app":
             import intents
-            self.run_cmd(app_command(a["app"]))
-            intents.note_app(a["app"])
+            name = intents.APP_NAMES.get(a["app"].lower().strip(), a["app"])  # "Chrome" -> "Google Chrome"
+            self.run_cmd(app_command(name))
+            intents.note_app(name)
             self.sleep(1.5)
         elif act == "first_video":
             self.first_video()

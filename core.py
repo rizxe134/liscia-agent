@@ -120,6 +120,7 @@ class Agent:
         self.make_executor = self._executor
         self.kill = KillSwitch(s.get("kill_keys", ["esc", "f12"]))
         self._page = (None, None)
+        self.ext = None  # tests can inject an ExtensionLink
         intents.STATE["preferred"] = cfg["agent"].get("preferred_browser") or None
 
     def _executor(self, scale):
@@ -128,6 +129,14 @@ class Agent:
             try: ex.on_click = lambda x, y: (self.on_highlight(x=x, y=y, space="screen_points"), time.sleep(0.35))
             except Exception: pass
         return ex
+
+    def use_extension(self):
+        """Use the Chrome extension when it's connected and Chrome is the browser we're working in."""
+        if not self.cfg["agent"].get("chrome_extension", True): return False
+        import extlink
+        link = self.ext or extlink.LINK
+        if not link.connected(): return False
+        return intents.current_browser() == "Google Chrome"
 
     def wait_page_change(self, act, timeout=8.0):
         """Mark a sub-step done when the front tab's URL/title changes (AppleScript); else fixed wait."""
@@ -225,6 +234,16 @@ class Agent:
             if fixed:
                 history += [f"(already done) {d}" for d in done_steps]
                 task = rest
+        # 2) Chrome + extension connected: drive the page through the extension (element ids, no screenshots)
+        if self.use_extension():
+            import webagent
+            try:
+                result = webagent.run_web(self, task, history, logf, max_steps=a_cfg.get("max_steps", 40))
+                self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+            except NeedsVision as e:
+                self.log(f"[web] handing over to screenshots: {e}")
+            except Exception as e:
+                self.log(f"[web] extension path failed ({e}); using screenshots")
         plan = self.make_plan(task) if a_cfg.get("plan", True) else ""
         if plan: self.log("Plan:\n" + plan)
         try:

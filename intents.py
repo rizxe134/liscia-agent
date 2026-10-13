@@ -31,6 +31,10 @@ def current_browser(frontmost=None):
         STATE["browser"] = front; return front
     if STATE["browser"]:
         return STATE["browser"]
+    try:
+        import extlink
+        if extlink.LINK.connected(): return "Google Chrome"  # the extension is live -> work in Chrome
+    except Exception: pass
     if STATE.get("preferred"):
         return STATE["preferred"]
     try: recent = browser_dom.recent_browser()

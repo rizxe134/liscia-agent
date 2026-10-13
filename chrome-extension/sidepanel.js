@@ -26,7 +26,7 @@ async function highlight(x, y) {
 function onEvent(ev) {
   const m = JSON.parse(ev.data);
   switch (m.type) {
-    case "hello": retry = 0; $("conn").textContent = "[connected]"; setBusy(m.busy); break;
+    case "hello": retry = 0; $("conn").textContent = "[connected]"; setBusy(m.busy); refreshStatus(); break;
     case "status": setBusy(m.state !== "ready", m.state === "ready" ? "READY" : m.state); if (m.state === "ready") live = null; break;
     case "token": if (!live) live = line("", "bot"); live.textContent += m.text; $("log").scrollTop = 1e9; break;
     case "chat": if (live) { live.textContent = m.text; live = null; } else line(m.text, "bot"); break;
@@ -60,7 +60,7 @@ function connect() {
     setTimeout(connect, Math.min(1000 * 2 ** retry++, 15000)); };
 }
 function showSetup(msg) { $("setup").hidden = false; if (msg) line(msg, "err"); }
-$("save").onclick = async () => { token = $("tok").value.trim(); await chrome.storage.local.set({token}); $("setup").hidden = true; connect(); };
+$("save").onclick = async () => { token = $("tok").value.trim(); await chrome.storage.local.set({token}); $("setup").hidden = true; connect(); };  // the service worker picks the token up from storage too
 $("stop").onclick = () => post("/stop");
 $("take").onclick = () => post("/takeover");
 $("f").onsubmit = async (e) => {
@@ -74,3 +74,12 @@ chrome.storage.local.get("token").then(({token: t}) => {
   line("Liscia Agent side panel. Chat, or tell it to do things in the browser. Esc / STOP to halt.", "dim");
   if (t) { token = t; connect(); } else showSetup();
 });
+
+async function refreshStatus() {
+  try {
+    const r = await fetch(`${BASE}/status`, {headers: {"X-PCA-Token": token}}); if (!r.ok) return;
+    const st = await r.json(), on = st.extension && st.extension.connected;
+    $("conn").textContent = on ? "[connected · page control ON]" : "[connected · page control OFF - reload the extension]";
+  } catch (e) {}
+}
+setInterval(() => { if (token && es && es.readyState === 1) refreshStatus(); }, 10000);

@@ -105,6 +105,15 @@ buttons, and confirmation prompts in the panel.
    - From source: `~/.pc-agent/token` (macOS: `cat ~/.pc-agent/token | pbcopy`)
 4. Click the Liscia Agent toolbar icon to open the side panel, paste the token, and click **CONNECT**.
 
+**Page control (1.2+):** once the token is saved, the extension's background worker keeps a connection to Liscia
+Agent even with the panel closed. When Chrome is the browser in use, the agent reads the page through the extension
+(the buttons, links and fields, plus dialogs and page text) and acts by element id: click, type, press, select,
+scroll, hover, navigate, tabs, wait, read text, screenshot. That's faster and more accurate than screenshots, which
+remain the fallback. Check it with `curl -H "X-PCA-Token: $(cat ~/Library/Application\ Support/Liscia\ Agent/token)"
+http://127.0.0.1:8765/status`, which shows `"connected": true`. The panel header shows `page control ON`.
+The extension asks for the *debugger* permission, which it uses only as a fallback for clicks that a page ignores.
+While it's in use, Chrome shows a "started debugging this browser" bar.
+
 Each computer has its own token. Requests without it, or from normal web pages, are rejected.
 
 ## Config and files

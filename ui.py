@@ -159,6 +159,10 @@ class ChatApp:
     def _log(self, msg):
         tag = "step" if msg.startswith("[") else ("warn" if "stop" in msg.lower() else "step")
         self.q.put((tag, msg))
+        try:
+            import server
+            if server.BRIDGE: server.BRIDGE.log(msg)  # narrate in the Chrome side panel too
+        except Exception: pass
     def _confirm(self, msg):
         ev, box = threading.Event(), {}
         self.q.put(("confirm", (msg, ev, box))); ev.wait(); return box.get("ok", False)
