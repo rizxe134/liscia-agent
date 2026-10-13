@@ -487,7 +487,7 @@ class PanelBridge(unittest.TestCase):
 class Packaging(unittest.TestCase):
     def test_user_data_dirs(self):
         import paths
-        self.assertEqual(paths.user_data_dir("darwin", {}, "/Users/u"), "/Users/u/Library/Application Support/PC Agent")
+        self.assertEqual(paths.user_data_dir("darwin", {}, "/Users/u"), os.path.join("/Users/u", "Library", "Application Support", "PC Agent"))
         self.assertTrue(paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U").endswith("PC Agent"))
         self.assertIn("C:\\\\R", paths.user_data_dir("win32", {"APPDATA": "C:\\\\R"}, "C:\\\\U"))
     def test_frozen_config_copied_to_data_dir(self):
