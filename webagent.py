@@ -1,5 +1,5 @@
 """Browser loop driven by the Chrome extension: snapshot -> text model picks an element id -> extension acts -> verify."""
-import json, time
+import json, re, time
 from actions import ActionError, NeedsVision
 import extlink
 
@@ -17,7 +17,8 @@ Actions:
   {"action":"new_tab","url":"https://..."}  {"action":"switch_tab","match":"<title words>"}  {"action":"close_tab"}  {"action":"back"}
   {"action":"find","text":"<words of the thing you want>"}   search the WHOLE page (scrolling down, loading more results) and scroll it into view
   {"action":"wait_for","text":"<text that should appear>"}
-  {"action":"extract_text"}                              read the page text (to answer questions)
+  {"action":"read_page"}                                 read the page's main text (to answer questions)
+  {"action":"answer","text":"<final answer for the user>"}  answer the user's question from text you have read; ends the task
   {"action":"done","summary":"<what was achieved / the answer>"}
   {"action":"vision","reason":"..."}                     ONLY if the page can't be handled from the element list (canvas, games)
 Rules: use ids ONLY from the list. Pick by reading the label. Never repeat an action that did not change the page.
@@ -25,7 +26,7 @@ If the task is already achieved, reply done. For YouTube/Google searches prefer 
 Elements marked (below) are further down the page: you can click them directly (the page scrolls to them).
 If what you want is not in the list, use find or scroll down - NEVER reply done with "not found" before scrolling."""
 
-ACTS = {"find", "type", "press", "select", "scroll", "hover", "navigate", "new_tab", "switch_tab", "close_tab", "back",
+ACTS = {"answer", "read_page", "find", "type", "press", "select", "scroll", "hover", "navigate", "new_tab", "switch_tab", "close_tab", "back",
         "wait_for", "extract_text", "done", "vision", "click"}
 
 def parse(raw):
@@ -36,7 +37,8 @@ def parse(raw):
         if isinstance(a.get(k), dict): a = {**a.pop(k), **a}
     act = str(a.get("action", "")).lower().strip()
     act = {"click_element": "click", "open_url": "navigate", "goto": "navigate", "press_enter": "press", "enter": "press",
-           "input": "type", "fill": "type", "finish": "done"}.get(act, act)
+           "input": "type", "fill": "type", "finish": "done",
+           "extract": "read_page", "extract_text": "read_page", "read": "read_page", "get_text": "read_page", "reply": "answer", "respond": "answer"}.get(act, act)
     if act not in ACTS: raise ActionError(f"unknown action {act!r}")
     a["action"] = act
     if act == "press": a.setdefault("key", "Enter")
@@ -47,17 +49,53 @@ def parse(raw):
     if act in ("navigate", "new_tab") and not a.get("url"): raise ActionError(f"{act} needs url")
     if act == "find" and not str(a.get("text") or a.get("query") or "").strip(): raise ActionError("find needs text")
     if act == "find": a["text"] = str(a.get("text") or a.get("query"))
+    if act == "answer":
+        a["text"] = str(a.get("text") or a.get("answer") or a.get("summary") or "").strip()
+        if not a["text"]: raise ActionError("answer needs text")
     if "press_enter" in a: a["press_enter"] = a["press_enter"] in (True, "true", 1, "yes")
     return a
 
-def format_snapshot(s, max_els=70):
+JUNK = re.compile(r"^(privacy|privacy (policy|statement|notice)|terms|terms (of (use|service))?|cookies?( (policy|settings|preferences))?|"
+                  r"jobs|careers|advertis\w*|business|about( us)?|help|send feedback|feedback|legal|imprint|accessibility|sitemap|"
+                  r"how search works|settings|report inappropriate predictions|your data in search|do not sell.*|contact( us)?|press|investors)$", re.I)
+
+def is_junk(el, task=""):
+    """Footer / legal / corporate links that never help a task (unless the task mentions them)."""
+    lab = (el.get("label") or "").strip()
+    return bool(lab) and bool(JUNK.match(lab)) and lab.lower() not in (task or "").lower()
+
+def today():
+    import datetime
+    return datetime.date.today().strftime("%A %B %d, %Y")
+
+def is_404(snap):
+    t = ((snap.get("title") or "") + " " + (snap.get("text") or "")[:300]).lower()
+    return bool(re.search(r"\b404\b|page not found|not found \(|this page (?:isn't|is not) available|page (?:doesn't|does not) exist", t))
+
+def main_text(link, max_chars=3500):
+    """The page's main text, whitespace-collapsed and trimmed."""
+    res = link.call("extract_text", timeout=20, max=max_chars * 2) or {}
+    return " ".join((res.get("text") or "").split())[:max_chars]
+
+def top_result(snap):
+    """First real search result link (not Google's own pages, not footer junk)."""
+    for e in snap.get("elements") or []:
+        h = e.get("href") or ""
+        if e.get("role") != "link" or not h.startswith("http") or is_junk(e): continue
+        host = re.sub(r"^https?://", "", h).split("/")[0].lower()
+        if re.search(r"(^|\.)google\.|gstatic\.|googleusercontent\.|youtube\.com$|webcache", host): continue
+        if len((e.get("label") or "").split()) < 2: continue
+        return e
+    return None
+
+def format_snapshot(s, max_els=70, task=""):
     lines = [f"URL: {s.get('url','')}", f"TITLE: {s.get('title','')}"]
     if s.get("dialogs"): lines.append("OPEN DIALOG(S): " + "; ".join(d.get("label", "") for d in s["dialogs"]) + "  <- deal with it first")
     sc = s.get("scroll") or [0, 0]
     lines.append(f"SCROLL: {sc[0]}/{sc[1]}px")
     lines.append("PAGE TEXT (start): " + " ".join((s.get("text") or "").split())[:600])
     lines.append("ELEMENTS:")
-    for e in (s.get("elements") or [])[:max_els]:
+    for e in [e for e in (s.get("elements") or []) if not is_junk(e, task)][:max_els]:
         extra = ""
         if e.get("value"): extra += f" value={e['value']!r}"
         if e.get("href") and e["role"] == "link": extra += " -> " + e["href"].split("?")[0][-60:]
@@ -75,7 +113,6 @@ def risky_text(act, snap):
     el = next((e for e in snap.get("elements") or [] if str(e.get("id")) == str(act.get("id"))), {})
     return " ".join(str(x) for x in (act.get("thought", ""), el.get("label", ""), act.get("text", "") if act["action"] == "type" else ""))
 
-import re
 NOT_FOUND = re.compile(r"not (?:be )?found|n[o']t find|could ?n[o']t|cannot find|can't find|unable to|no (?:matching |such )?(?:result|video|item)s?|not (?:visible|available|on the page|listed)|doesn'?t (?:appear|exist)", re.I)
 MIN_SCROLLS = 5
 
@@ -97,7 +134,7 @@ def scroll_find(link, text, log=print, max_scrolls=8, sleep=time.sleep):
         sleep(0.4)
     return None
 
-def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.sleep):
+def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.sleep, info=None):
     """Returns a result string. Raises NeedsVision to hand over to the screenshot loop."""
     from actions import is_risky
     link = link or extlink.LINK
@@ -114,10 +151,18 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     agent.log(f"[web] page: {snap.get('title','')[:60]} | {snap.get('url','')[:90]} ({len(snap.get('elements') or [])} elements)")
     from core import LoopGuard
     guard = LoopGuard(2, 3, 5); bad = 0; notes = []; scrolls = 0; no_change = 0
+    import intents
+    if info is None: info = intents.is_question(task)
+    if info: max_steps = min(max_steps, agent.cfg.get("agent", {}).get("info_max_steps", 8))
+    seen = {}; dead_urls = set(); read = ""
+    max_els = 40 if info else 70
     for step in range(1, max_steps + 1):
         if agent.kill.killed: return "stopped by user"
-        prompt = (f"TASK: {task}\n\nCURRENT PAGE:\n{format_snapshot(snap)}\n\nRecent actions (oldest first):\n" +
-                  ("\n".join(history[-8:]) or "(none)") + "\n" + "".join(f"WARNING: {n}\n" for n in notes) + "Next action? JSON only.")
+        prompt = (f"TODAY: {today()}\nTASK: {task}\n\nCURRENT PAGE:\n{format_snapshot(snap, max_els, task)}\n" +
+                  (f"\nTEXT YOU READ:\n{read[:1800]}\n" if read else "") + "\nRecent actions (oldest first):\n" +
+                  ("\n".join(history[-6:]) or "(none)") + "\n" + "".join(f"WARNING: {n}\n" for n in notes) +
+                  ("This is a QUESTION: read_page, then answer from the text (use the current year, not an old one).\n" if info else "") +
+                  "Next action? JSON only.")
         notes = []
         t0 = time.time()
         raw = agent.client.text_chat([{"role": "system", "content": WEB_SYSTEM}, {"role": "user", "content": prompt}],
@@ -143,6 +188,29 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             agent.log(f"[web{step}] not found yet -> scrolling down instead of giving up")
         if act["action"] == "done":
             logf.write(json.dumps(entry) + "\n"); return act.get("summary", "done")
+        if act["action"] == "answer":
+            logf.write(json.dumps(entry) + "\n"); return act["text"]
+        if act["action"] == "read_page":
+            try: read = main_text(link)
+            except extlink.ExtError as e: read = ""; history.append(f"web{step}: read_page FAILED: {e}")
+            history.append(f"web{step}: read_page -> {len(read)} chars (shown under TEXT YOU READ)")
+            notes.append("Now reply with answer, using TEXT YOU READ." if info else "")
+            logf.write(json.dumps(dict(entry, chars=len(read))) + "\n"); continue
+        sig = json.dumps({k: act.get(k) for k in ("action", "id", "text", "url", "key", "direction")}, sort_keys=True)
+        if act["action"] != "scroll": seen[sig] = seen.get(sig, 0) + 1
+        if seen.get(sig, 0) > 2 and act["action"] != "scroll":
+            history.append(f"web{step}: {json.dumps(shown)} -> BLOCKED: you already did exactly this twice")
+            notes.append("Do NOT repeat that action again. Choose something different" + (", or read_page and answer." if info else "."))
+            logf.write(json.dumps(dict(entry, blocked="repeat")) + "\n"); continue
+        if act["action"] in ("navigate", "new_tab") and act["url"].rstrip("/") in dead_urls:
+            history.append(f"web{step}: navigate {act['url']} -> BLOCKED: that URL returned 404 before; don't invent URLs, use search results")
+            logf.write(json.dumps(dict(entry, blocked="404")) + "\n"); continue
+        if act["action"] == "click" and el and is_junk(el, task):
+            history.append(f"web{step}: click \"{el['label']}\" -> BLOCKED: footer/legal link, not useful")
+            logf.write(json.dumps(dict(entry, blocked="junk")) + "\n"); continue
+        if act["action"] == "find" and len(act["text"].split()) > 6:  # a whole question is not text on the page
+            act = {"action": "read_page"}; read = main_text(link)
+            history.append(f"web{step}: find with a whole sentence -> read the page instead ({len(read)} chars)"); continue
         if act["action"] == "find":
             res = scroll_find(link, act["text"], agent.log, sleep=sleep); scrolls += 1
             snap = link.call("snapshot")
@@ -156,6 +224,7 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         level = guard.check({"action": act["action"], "text": act.get("text"), "url": act.get("url"), "app": act.get("id"), "keys": act.get("key")})
         if level >= 3 and scrolls < MIN_SCROLLS:
             level = 2
+        if level >= 3 and info: break
         if level >= 3: raise NeedsVision("stuck repeating the same browser action")
         if level == 2:
             history.append(f"web{step}: {json.dumps(shown)} -> BLOCKED (repeated, page did not change)")
@@ -185,6 +254,9 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         except extlink.ExtError as e:  # page navigating
             sleep(1.0); snap = link.call("snapshot")
         changed = page_key(snap) != before
+        if act["action"] in ("navigate", "new_tab", "click") and is_404(snap):
+            dead_urls.add(str(snap.get("url", "")).rstrip("/")); dead_urls.add(str(act.get("url", "")).rstrip("/"))
+            history.append(f"web{step}: that page is a 404 (not found) - go back and use real links from search results")
         if act["action"] != "extract_text":
             history.append(f"web{step}: {json.dumps(shown)}{target} -> " + ("page changed" if changed else "NO CHANGE on the page"))
         if changed: guard.last = None; no_change = 0
@@ -194,7 +266,13 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
                 link.call("scroll", timeout=12, direction="down", wait_lazy=True); scrolls += 1; no_change = 0
                 snap = link.call("snapshot"); notes.append("Nothing changed 3 times; I scrolled down to show more of the page.")
         logf.write(json.dumps(entry) + "\n"); logf.flush()
-        import intents
         if intents.goal_reached(task, snap.get("url")):
             return f"done: goal reached ({snap.get('url')})"
+    if info:  # out of steps on a question: answer from whatever page we're on instead of nothing
+        try:
+            ans = agent.answer_question(link, task, logf, max_pages=1)
+            if isinstance(ans, str) and ans: return ans
+        except Exception as e:
+            agent.log(f"[web] final answer failed: {e}")
+        return "I couldn't find a clear answer in time."
     return "max steps reached"

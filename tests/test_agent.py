@@ -910,3 +910,102 @@ class V124Slash(unittest.TestCase):
         br._chat("/token"); br._chat("/help")
         router.assert_not_called()
         self.assertFalse(any("t" * 40 in str(d) for _, d in ev)); self.assertTrue(any("/token" in str(d) for _, d in ev))
+
+WIN_TASK = "can you go to google and search for who the top 10 richest people are in the world right now"
+class GoogleFake(FakeExt):
+    def __init__(self, link, results_text="", page_text=""):
+        self.results_text, self.page_text = results_text, page_text; super().__init__(link)
+    def snap(self):
+        els = [{"id": "1", "role": "link", "label": "Privacy", "href": "https://policies.google.com/privacy"},
+               {"id": "2", "role": "link", "label": "Jobs", "href": "https://careers.google.com"},
+               {"id": "3", "role": "link", "label": "The World's Real-Time Billionaires - Forbes", "href": "https://www.forbes.com/real-time-billionaires/"}]
+        title = "Not Found" if "top-rich-list" in self.url else "results"
+        return {"url": self.url, "title": title, "elements": els, "dialogs": [], "text": "404 page not found" if title == "Not Found" else "", "scroll": [0, 100]}
+    def loop(self):
+        while not self.stop:
+            for c in self.link.poll({"version": "test"}, hold=0.05):
+                self.calls.append((c["cmd"], c["args"])); a = c["args"]; r = {"id": c["id"], "ok": True, "result": {}}
+                if c["cmd"] == "snapshot": r["result"] = self.snap()
+                elif c["cmd"] == "navigate": self.url = a["url"]
+                elif c["cmd"] == "extract_text": r["result"] = {"text": self.page_text if "forbes" in self.url else self.results_text}
+                self.link.result(r)
+
+class V125Answers(unittest.TestCase):
+    def setUp(self):
+        import extlink, time
+        self.link = extlink.ExtensionLink()
+    def start(self, **kw):
+        import time
+        self.ext = GoogleFake(self.link, **kw); self.addCleanup(setattr, self.ext, "stop", True)
+        for _ in range(100):
+            if self.link.connected(): break
+            time.sleep(0.01)
+    def agent(self, client):
+        g = mock.MagicMock(); g.size.return_value = (800, 600)
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 40, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "plan": False},
+               "safety": {"confirm_risky": False, "kill_keys": []}}
+        a = Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: mock.MagicMock(), dom=False)
+        a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None; return a
+    def test_parse_google_requests(self):
+        self.assertEqual(_intents.google_request(WIN_TASK), "who the top 10 richest people are in the world right now")
+        self.assertEqual(_intents.google_request("google best pizza near me"), "best pizza near me")
+        self.assertEqual(_intents.google_request("search the web for python 3.14 release date"), "python 3.14 release date")
+        self.assertEqual(_intents.google_request("search for cheap flights to tokyo on google"), "cheap flights to tokyo")
+        self.assertIsNone(_intents.google_request("search youtube for lofi"))
+        self.assertTrue(_intents.is_question(WIN_TASK)); self.assertFalse(_intents.is_question("search for cat pictures"))
+        acts, rest = _intents.plan(WIN_TASK)
+        self.assertEqual(rest, ""); self.assertIn("google.com/search?q=who+the+top+10+richest", acts[0]["url"]); self.assertNotIn("2023", acts[0]["url"])
+        self.assertEqual(acts[1]["action"], "answer_from_page")
+    def test_answers_from_results_page_in_one_model_call(self):
+        import extlink
+        self.start(results_text="1. Elon Musk $400B 2. Larry Ellison ...")
+        client = mock.MagicMock(); client.text_chat.return_value = '{"answer": "1. Elon Musk\\n2. Larry Ellison"}'
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
+            res = self.agent(client).run(WIN_TASK)
+        self.assertEqual(res, "1. Elon Musk\n2. Larry Ellison"); self.assertEqual(client.text_chat.call_count, 1)
+        sys_prompt = client.text_chat.call_args[0][0][0]["content"]
+        import datetime; self.assertIn(str(datetime.date.today().year), sys_prompt)
+    def test_opens_top_result_when_results_page_insufficient(self):
+        import extlink
+        self.start(results_text="ads", page_text="Forbes real-time list: Musk, Ellison, Zuckerberg")
+        client = mock.MagicMock(); client.text_chat.side_effect = ['{"answer": "", "need_more": true}', '{"answer": "Musk, Ellison, Zuckerberg"}']
+        with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
+            res = self.agent(client).run(WIN_TASK)
+        self.assertEqual(res, "Musk, Ellison, Zuckerberg")
+        navs = [a["url"] for c, a in self.ext.calls if c == "navigate"]
+        self.assertEqual(navs[-1], "https://www.forbes.com/real-time-billionaires/")  # not Privacy/Jobs
+    def test_webagent_blocks_repeats_404_and_junk_and_answers(self):
+        import webagent
+        self.start(results_text="Musk is first")
+        self.ext.url = "https://www.google.com/search?q=x"
+        client = mock.MagicMock(); client.text_chat.side_effect = [
+            '{"action":"click","id":"1"}',                                              # Privacy -> blocked
+            '{"action":"navigate","url":"https://www.forbes.com/top-rich-list"}',       # 404
+            '{"action":"navigate","url":"https://www.forbes.com/top-rich-list"}',       # blocked (dead url)
+            '{"action":"navigate","url":"https://www.google.com/search?q=x"}',
+            '{"action":"navigate","url":"https://www.google.com/search?q=x"}',
+            '{"action":"navigate","url":"https://www.google.com/search?q=x"}',          # 3rd identical -> blocked
+            '{"action":"read_page"}', '{"action":"answer","text":"Elon Musk is the richest."}']
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.log = lambda m: None
+        ag.cfg = {"safety": {"confirm_risky": False, "risky_words": []}, "agent": {}}
+        res = webagent.run_web(ag, "who is the richest person", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
+        self.assertEqual(res, "Elon Musk is the richest.")
+        navs = [a["url"] for c, a in self.ext.calls if c == "navigate"]
+        self.assertEqual(navs.count("https://www.forbes.com/top-rich-list"), 1)
+        self.assertEqual(navs.count("https://www.google.com/search?q=x"), 2)
+        self.assertNotIn("click", [c for c, a in self.ext.calls])
+        prompt = client.text_chat.call_args_list[0][0][0][1]["content"]
+        self.assertIn("TODAY:", prompt); self.assertNotIn('"Privacy"', prompt); self.assertNotIn('"Jobs"', prompt)
+    def test_info_question_step_cap(self):
+        import webagent
+        self.start()
+        client = mock.MagicMock(); client.text_chat.return_value = '{"action":"scroll","direction":"down"}'
+        ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False; ag.log = lambda m: None
+        ag.cfg = {"safety": {"confirm_risky": False, "risky_words": []}, "agent": {}}
+        webagent.run_web(ag, "what is the weather in paris", [], open(os.devnull, "w"), link=self.link, max_steps=40, sleep=lambda s: None)
+        self.assertLessEqual(client.text_chat.call_count, 8)
+    def test_parse_answer_actions(self):
+        import webagent
+        self.assertEqual(webagent.parse('{"action":"extract_text"}')["action"], "read_page")
+        self.assertEqual(webagent.parse('{"action":"answer","answer":"x"}')["text"], "x")
+        with self.assertRaises(ActionError): webagent.parse('{"action":"answer"}')

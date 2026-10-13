@@ -171,6 +171,44 @@ class Agent:
             else: a["browser"] = b
         return a
 
+    ANSWER_SYSTEM = ("You answer the user's question using ONLY the web page text given. Today is {today}; 'now'/'current' means today, "
+                     "never an older year from your memory. Reply with ONE JSON object: "
+                     '{{"answer": "<clear, complete answer, use a short numbered list when asked for a list; mention the source/date if the text gives one>"}} '
+                     'or, if the text does not contain the answer, {{"answer": "", "need_more": true}}.')
+
+    def _answer_from(self, question, text, url):
+        import webagent
+        sys_p = self.ANSWER_SYSTEM.format(today=webagent.today())
+        raw = self.client.text_chat([{"role": "system", "content": sys_p},
+                                     {"role": "user", "content": f"QUESTION: {question}\nPAGE ({url[:100]}):\n{text}"}],
+                                    json_mode=True, num_predict=self.cfg["agent"].get("answer_tokens", 350))
+        try:
+            obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
+        except ValueError:
+            return (raw or "").strip() if raw and "{" not in raw else ""
+        ans = str(obj.get("answer") or "").strip()
+        return "" if obj.get("need_more") and not ans else ans
+
+    def answer_question(self, link, question, logf, max_pages=2):
+        """Read the results page; answer. If it isn't enough, open the top real result and answer from that."""
+        import webagent
+        t0 = time.time(); time.sleep(1.0)
+        limit = self.cfg["agent"].get("answer_chars", 2500)
+        for page in range(max_pages):
+            text = webagent.main_text(link, limit); url = ""
+            try: snap = link.call("snapshot", max=60); url = snap.get("url", "")
+            except Exception: snap = {}
+            self.log(f"[web] reading {url[:80]} ({len(text)} chars)")
+            ans = self._answer_from(question, text, url) if text else ""
+            logf.write(json.dumps({"answer_try": page + 1, "url": url, "chars": len(text), "answer": ans[:500], "secs": round(time.time() - t0, 1)}) + "\n")
+            if ans: return ans
+            if page + 1 >= max_pages: break
+            top = webagent.top_result(snap)
+            if not top: break
+            self.log(f"[web] not enough on the results page - opening \"{top['label'][:60]}\"")
+            link.call("navigate", timeout=25, url=top["href"]); time.sleep(1.5)
+        return "I searched but couldn't find a clear answer on the page."
+
     def run_via_extension(self, task, history, logf):
         """Deterministic steps through the extension (navigate / YouTube search / first video), then webagent."""
         import webagent
@@ -185,6 +223,9 @@ class Agent:
             if act["action"] == "open_url":
                 res = link.call("navigate", timeout=25, url=act["url"]) or {}
                 self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
+            elif act["action"] == "answer_from_page":
+                logf.write(json.dumps({"web_fast": act}) + "\n")
+                return self.answer_question(link, act.get("question") or task, logf)
             elif act["action"] == "first_video":
                 time.sleep(1.0); res = None
                 if act.get("match"):  # a specific title: search the whole results list, scrolling for lazy-loaded items

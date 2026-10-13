@@ -127,6 +127,30 @@ def youtube_request(task):
     after = t[m.end():]
     return q, bool(_PLAY.search(after) or re.search(r"\b(?:play|listen to|watch)\b", t[:m.start()], re.I))
 
+QUESTION = re.compile(r"\b(who|what|whats|when|where|which|why|how (?:many|much|old|tall|long|far|big|do|does|to)|is it|are there|"
+                      r"top \d+|richest|tallest|biggest|largest|best|price of|cost of|weather|population|capital of|score|news)\b|\?\s*$", re.I)
+
+def is_question(task):
+    return bool(QUESTION.search(task or ""))
+
+def google_request(task):
+    """'can you go to google and search for X' / 'google X' / 'search the web for X' -> X (the user's own words), else None."""
+    t = fix_typos(task or "").strip()
+    if re.search(r"\byoutube\b", t, re.I): return None
+    t = re.sub(r"^(?:(?:hey|ok|okay|please|can you|could you|would you|will you|now|just|pls)\s+)+", "", t, flags=re.I)
+    t = re.sub(r"\s+(?:in|on|using)\s+(?:google\s+)?chrome\s*$", "", t, flags=re.I)
+    pats = [r"^(?:go to|open(?: up)?|visit|use)\s+google(?:\.com)?\s*(?:,|and|then|and then)\s*(?:(?:please|can you|could you)\s+)?(?:search|look up|find|google)\s+(?:up\s+)?(?:for\s+)?(.+)$",
+            r"^(?:search|look up|find)\s+(?:on\s+)?(?:google|the web|the internet|online)\s+(?:for\s+)?(.+)$",
+            r"^(?:search|look up)\s+(?:for\s+)?(.+?)\s+(?:on|in|using)\s+(?:google|the web|the internet)$",
+            r"^google\s+(?:for\s+)?(.+)$"]
+    for p in pats:
+        m = re.match(p, t, re.I)
+        if m:
+            q = m.group(1).strip(" .'\"?!")
+            q = re.sub(r"\s+(?:on|in|using)\s+google$", "", q, flags=re.I)
+            return q or None
+    return None
+
 def match_words(q):
     """Words to look for in result titles (drops filler like 'by', 'the', 'song')."""
     stop = {"by", "the", "a", "an", "song", "video", "official", "music", "ft", "feat"}
@@ -139,6 +163,11 @@ def _yt(q):
 
 def plan(task):
     """Split a task into clauses. Returns (deterministic_actions, remaining_text or '')."""
+    gq = google_request(task)
+    if gq:  # deterministic Google search; questions are then answered from the results page
+        import urllib.parse
+        a = {"action": "open_url", "url": "https://www.google.com/search?q=" + urllib.parse.quote_plus(gq)}
+        return [a] + ([{"action": "answer_from_page", "question": task}] if is_question(task) else []), ""
     yt = youtube_request(task)
     if yt:  # whole-sentence YouTube search (+ play) - tolerant of filler and typos
         q, play = yt; nb = named_browser(task)
