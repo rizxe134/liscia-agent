@@ -111,6 +111,21 @@ def strip_instructions(q):
 
 _LEAD_RE = re.compile(r"^(?:(?:hey|hi|ok|okay|please|so|can you|could you|would you|will you|pls|i need you to|i want you to)\s+)+", re.I)
 
+def verbatim(task, q):
+    """Return the span of the ORIGINAL task text that the (possibly spell-corrected) query refers to.
+    'play gettin money' + model query 'getting money' -> 'gettin money'."""
+    import difflib
+    q = str(q or "").strip(); raw = task or ""
+    if not q or q.lower() in raw.lower(): return q
+    words = re.findall(r"\S+", raw); n = len(q.split())
+    best, bs = q, 0.0
+    for size in {max(1, n - 1), n, n + 1}:
+        for i in range(0, max(0, len(words) - size) + 1):
+            cand = " ".join(words[i:i + size]).strip(" .,!?\"'")
+            r = difflib.SequenceMatcher(None, cand.lower(), q.lower()).ratio()
+            if r > bs: best, bs = cand, r
+    return best if bs >= 0.75 else q
+
 def rule_plan(task):
     """Plan from code only (fast path, and fallback if the model fails). 'sure' = unambiguous, no model call needed."""
     p = _rule_plan(task); return p
@@ -220,6 +235,9 @@ def validate(p, task):
     if p["intent"] == "web_research_to_files" and p["query"]:
         cq = strip_instructions(p["query"])
         if len(cq.split()) >= 2: p["query"] = cq
+    # names/titles stay verbatim: if the model "corrected" the user's words, take them back from the original text
+    if p["intent"] in ("media_play", "desktop_app", "web_interact") and p.get("query"):
+        p["query"] = verbatim(task, p["query"])
     p["source"] = p.get("source", "model"); p.pop("sure", None)
     return p
 

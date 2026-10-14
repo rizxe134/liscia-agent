@@ -51,10 +51,14 @@ def format_elements(snap):
     return "\n".join(lines)
 
 # ---------------- Windows (UI Automation) ----------------
-def win_raw(max_depth=12, max_nodes=600):
+def win_raw(max_depth=12, max_nodes=600, hwnd=None):
+    """Element tree of ONE window: the bound app window (hwnd) - never 'whatever is in front'."""
     import uiautomation as auto
-    win = auto.GetForegroundControl()
-    top = win.GetTopLevelControl() if hasattr(win, "GetTopLevelControl") else win
+    if hwnd:
+        top = auto.ControlFromHandle(int(hwnd))
+    else:
+        win = auto.GetForegroundControl()
+        top = win.GetTopLevelControl() if hasattr(win, "GetTopLevelControl") else win
     title, app = top.Name, ""
     try:
         import psutil; app = psutil.Process(top.ProcessId).name()
@@ -79,7 +83,8 @@ def win_raw(max_depth=12, max_nodes=600):
 
 # ---------------- macOS (Accessibility via System Events) ----------------
 JXA = r"""
-const se = Application('System Events'); const p = se.processes.whose({frontmost: true})[0];
+const se = Application('System Events'); const PID = parseInt('__PID__');
+const p = PID > 0 ? se.processes.whose({unixId: PID})[0] : se.processes.whose({frontmost: true})[0];
 const out = []; let n = 0;
 function walk(el, d) { if (d > 9 || n > 500) return; let kids = [];
   try { kids = el.uiElements(); } catch (e) { return; }
@@ -92,20 +97,28 @@ try { walk(p.menuBars[0], 7); } catch (e) {}
 JSON.stringify({app: p.name(), title: title, raw: out});
 """
 
-def mac_raw(run=subprocess.run):
-    r = run(["osascript", "-l", "JavaScript", "-e", JXA], capture_output=True, text=True, timeout=25)
+def mac_raw(run=subprocess.run, pid=0):
+    r = run(["osascript", "-l", "JavaScript", "-e", JXA.replace("__PID__", str(int(pid or 0)))], capture_output=True, text=True, timeout=25)
     d = json.loads(r.stdout or "{}")
     return d.get("app", ""), d.get("title", ""), d.get("raw", [])
 
+class WrongWindow(RuntimeError):
+    """The bound app window isn't in the foreground (and refocusing failed): never act on another window."""
+
 class AppUI:
     """Adapter used by the agent like browser_dom.BrowserDOM: snapshot() and click(id), plus type_into(id, text)."""
-    def __init__(self, gui=None, limit=80, raw_fn=None, log=print):
-        self.gui, self.limit, self.log = gui, limit, log
+    def __init__(self, gui=None, limit=80, raw_fn=None, log=print, binding=None):
+        """binding: winbind.WindowBinding - when given, every snapshot reads ONLY that window, and refuses to run if it isn't in front."""
+        self.gui, self.limit, self.log, self.binding = gui, limit, log, binding
+        if raw_fn is None and binding is not None:
+            raw_fn = (lambda: win_raw(hwnd=binding.hwnd)) if IS_WIN else (lambda: mac_raw(pid=binding.hwnd)) if IS_MAC else None
         self.raw_fn = raw_fn or (win_raw if IS_WIN else mac_raw if IS_MAC else None)
         self.last = {"elements": []}
 
     def snapshot(self):
         if not self.raw_fn: return {"elements": []}
+        if getattr(self, "binding", None) is not None and not self.binding.ensure():
+            raise WrongWindow(f"{self.binding.app} is not in front and couldn't be focused")
         app, title, raw = self.raw_fn()
         import policy
         if policy.core_app(app, title):  # never expose/operate a core app
@@ -123,6 +136,8 @@ class AppUI:
         """Windows: act through UI Automation on the element itself (Invoke / focus / its own DPI-correct Click),
         never raw screen coordinates (UIA rects are physical pixels; the mouse may be in logical pixels)."""
         e = self._el(element_id); c = e.get("_ctrl")
+        if getattr(self, "binding", None) is not None and not self.binding.ensure():
+            raise WrongWindow(f"{self.binding.app} is not in front - not clicking")
         if c is not None:
             if e["tag"] in TYPABLE:
                 c.SetFocus(); return e

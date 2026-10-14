@@ -195,7 +195,8 @@ class Executor:
         return f"launched {name}"
 
     def _xy(self, a):
-        return int(a["x"] * self.scale), int(a["y"] * self.scale)
+        ox, oy = getattr(self, "offset", (0, 0)) or (0, 0)  # screenshot cropped to the bound app window -> add its origin
+        return int(a["x"] * self.scale + ox), int(a["y"] * self.scale + oy)
 
     def execute(self, a):
         g, act = self.gui, a["action"]

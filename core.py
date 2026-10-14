@@ -118,6 +118,7 @@ class Agent:
             gui.FAILSAFE = s.get("failsafe", True); gui.PAUSE = 0.05
         self.gui, self.capture = gui, capture or screen.capture
         self.on_highlight = None  # side panel hook: on_highlight(x=..., y=..., space="screen_points")
+        self._injected_exec = executor is not None
         self._mk = executor or (lambda scale: Executor(self.gui, scale, cfg["agent"].get("move_duration_s", 0.25), dom=self.dom))
         self.make_executor = self._executor
         self.kill = KillSwitch(s.get("kill_keys", ["esc", "f12"]))
@@ -249,6 +250,15 @@ class Agent:
         except Exception as e:
             self.log(f"[doc] report text unavailable ({type(e).__name__}); using the summary")
             return None
+
+    def make_binding(self, app):
+        """WindowBinding for the launched app (None where unsupported, e.g. tests with an injected executor)."""
+        if getattr(self, "binding_factory", None): return self.binding_factory(app)
+        if not (sys.platform.startswith("win") or IS_MAC) or getattr(self, "_injected_exec", False): return None
+        import winbind, appindex
+        try: entry = appindex.find(app)
+        except Exception: entry = None
+        return winbind.WindowBinding(app, entry, log=self.log)
 
     def research_to_document(self, task, out, logf):
         """Web research through the extension, then a local .docx/.xlsx/.txt with the results (opened in the default app)."""
@@ -439,6 +449,8 @@ class Agent:
                 logf.write(json.dumps({"web_error": str(e)}) + "\n")
                 return finish(f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})")
         self.desktop_only = pl["intent"] == "desktop_app"
+        self.app_binding = None
+        self.desktop_app_name = pl.get("app", "") if self.desktop_only else ""
         skip_fast = False
         if pl["intent"] == "desktop_app":
             import policy
@@ -450,27 +462,51 @@ class Agent:
                 logf.write(json.dumps({"blocked": lbl}) + "\n")
                 return finish(policy.message(lbl))
             if app:
+                import adapters, winbind
                 t0 = time.time()
+                adapter = adapters.for_app(app, task)
                 try:
-                    ex = self.make_executor(1.0); ex.execute({"action": "open_app", "app": app})
-                    info = getattr(ex, "last_info", "") if isinstance(getattr(ex, "last_info", ""), str) else ""
+                    if adapter and adapter.launch_uri:
+                        adapters.open_uri(adapter.launch_uri); info = f"opened {adapter.launch_uri}"
+                    else:
+                        ex = self.make_executor(1.0); ex.execute({"action": "open_app", "app": app})
+                        info = getattr(ex, "last_info", "") if isinstance(getattr(ex, "last_info", ""), str) else ""
                     self.log(f"[app] {info or 'opened ' + app} ({time.time() - t0:.1f}s)"); logf.write(json.dumps({"app_open": app, "info": info}) + "\n")
                 except PermissionError as e:
                     return finish(str(e))
                 except Exception as e:
                     return finish(f"stopped: couldn't open {app} ({type(e).__name__}: {e}). Is it installed?")
-                if planner.rule_plan(task).get("sure") or re.match(r"^\W*(?:\w+\W+){0,3}?(open|launch|start|run)\s+(the\s+)?" + re.escape(app) + r"(\s+app)?\W*$", task, re.I):
+                just_open = planner.rule_plan(task).get("sure") or re.match(r"^\W*(?:\w+\W+){0,3}?(open|launch|start|run)\s+(the\s+)?" + re.escape(app) + r"(\s+app)?\W*$", task, re.I)
+                if just_open and not adapter:
                     return finish(f"Opened {app}.")
                 skip_fast = True
-                time.sleep(a_cfg.get("app_start_wait_s", 2.0))
+                # BIND the run to the launched app's own window; every later step is scoped to it
+                binding = self.make_binding(app)
+                if binding is not None:
+                    w = binding.bind(timeout=a_cfg.get("app_window_timeout_s", 15))
+                    if not w:
+                        return finish(f"stopped: {app} was launched but its window didn't appear, so I didn't act on any other window.")
+                    if not binding.ensure():
+                        return finish(f"stopped: couldn't bring {app} to the front, so I didn't act on any other window.")
+                    self.app_binding = binding
+                    logf.write(json.dumps({"bound_window": {k: w.get(k) for k in ("hwnd", "title", "proc", "pid")}}) + "\n")
+                    self.log(f"[app] bound to {w.get('proc') or app} window \"{(w.get('title') or '')[:60]}\"")
                 try:
                     import appui
-                    appui.focus_window(re.sub(r"^(microsoft|adobe|google)\s+", "", app, flags=re.I), timeout=6)
                     if a_cfg.get("app_ui", True) and self.dom is None and not getattr(self, "_injected_dom", False):
-                        self.dom = appui.AppUI(gui=self.gui if not isinstance(self.gui, type(None)) else None, limit=a_cfg.get("max_elements", 60), log=self.log)
+                        self.dom = appui.AppUI(gui=self.gui, limit=a_cfg.get("max_elements", 60), log=self.log, binding=self.app_binding)
                 except Exception as e:
                     self.log(f"[app] structured view unavailable ({type(e).__name__}); using screenshots")
+                if adapter:
+                    try:
+                        res = adapter.run(self, logf)
+                        if res: return finish(res)
+                    except Exception as e:
+                        self.log(f"[app] {app} shortcut flow failed ({type(e).__name__}: {e}); continuing step by step")
+                        logf.write(json.dumps({"adapter_error": str(e)}) + "\n")
                 history.append(f"1: open_app {app} (done) - it is open and focused; now do the rest of the task inside it")
+                hk = __import__("adapters").hint(app)
+                if hk: history.append("(note) " + hk)
                 # fast path: "open X and type Y" -> type into the app's text area directly, verify, done
                 m_t = re.search(r"\b(?:type|write|enter)\s+(?:in\s+|out\s+)?[\"']?(.+?)[\"']?\s*$", task, re.I)
                 if m_t and hasattr(self.dom, "first_typable") and not re.search(r"\b(and|then)\b.*\b(save|send|click|press)\b", m_t.group(1), re.I):
@@ -540,16 +576,30 @@ class Agent:
             if fixed:
                 history += [f"(already done) {d}" for d in done_steps]
                 task = rest
+        if self.desktop_only and self.desktop_app_name:  # desktop app runs get no web actions at all
+            system = "\n".join(l for l in system.splitlines() if not re.match(r"\s*(open_url|web_search|first_video)\s*:", l)
+                                 and "To visit a website use open_url" not in l)
+            if self.app_binding is not None:
+                system += (f"\nYou are operating ONLY the app '{self.app_binding.app}'. The screenshot shows only its window. "
+                           "Never use a browser or web actions. If you can't finish inside this app, use done and say why.")
         plan = self.make_plan(task) if a_cfg.get("plan", True) else ""
         if plan: self.log("Plan:\n" + plan)
         try:
             for step in range(1, a_cfg.get("max_steps", 40) + 1):
                 if self.kill.killed: result = "stopped by user"; break
+                if getattr(self, "app_binding", None) is not None and not self.app_binding.ensure():
+                    result = (f"stopped: {self.app_binding.app} is no longer in front and couldn't be brought back, "
+                              "so I stopped instead of acting on another window."); self.log(f"!! {result}"); break
                 if IS_MAC and step > 1:
                     url, _t = intents.page_info()
                     if intents.goal_reached(orig_task, url):
                         result = f"done: goal reached ({url})"; break
-                raw_img = self.capture()
+                raw_img = self.capture(); full_w = raw_img.width; crop_off = (0, 0)
+                if getattr(self, "app_binding", None) is not None:  # look ONLY at the bound app's window
+                    r = self.app_binding.window_rect()
+                    if r:
+                        l, t, rr, b = max(0, int(r[0])), max(0, int(r[1])), min(raw_img.width, int(r[2])), min(raw_img.height, int(r[3]))
+                        if rr - l > 50 and b - t > 50: raw_img = raw_img.crop((l, t, rr, b)); crop_off = (l, t)
                 if a_cfg.get("blank_check", IS_MAC) and screen.is_blank(raw_img):
                     result = ("stopped: the screenshots are blank, so Liscia Agent can't see the screen. Open System Settings > "
                               "Privacy & Security > Screen Recording, turn Liscia Agent OFF and ON again (or remove it with - and add it back), "
@@ -562,7 +612,8 @@ class Agent:
                     last_idx = None
                 prev_hash = h
                 img, scale = screen.prepare(raw_img, a_cfg.get("screenshot_width", 1280), 0 if norm else a_cfg.get("grid_spacing", 100))
-                scale *= screen.point_ratio(self.gui, raw_img.width)  # Retina: pixels -> points
+                pr = screen.point_ratio(self.gui, full_w); scale *= pr  # Retina: pixels -> points
+                step_offset = (crop_off[0] * pr, crop_off[1] * pr)
                 img.save(os.path.join(run_dir, f"step{step:03d}.png"))
                 hist = "\n".join(history[-a_cfg.get("max_history", 8):]) or "(none yet)"
                 prompt = (f"TASK: {task}\n" + (f"PLAN:\n{plan}\n" if plan else "") +
@@ -621,6 +672,10 @@ class Agent:
                 act = self.fix_browser(act)
                 import policy
                 why = policy.check(act, task)
+                if not why and self.desktop_only and getattr(self, "desktop_app_name", "") and not getattr(self, "desktop_web_ok", False):
+                    if act["action"] in DESKTOP_FORBIDDEN or (act["action"] == "open_app" and act.get("app") and intents.named_browser(str(act.get("app")))) or \
+                            (act["action"] == "hotkey" and {k.lower() for k in act.get("keys", [])} in ({"ctrl", "t"}, {"command", "t"})):
+                        why = f"{act['action']} is a web/browser action; this is a desktop task inside {getattr(self.app_binding, 'app', 'the app')} - work in that app's window"
                 if why:
                     blocked_opens += 1
                     self.log(f"!! blocked: {why}"); entry["blocked"] = why; logf.write(json.dumps(entry) + "\n")
@@ -669,7 +724,8 @@ class Agent:
                         history.append(f"{step}: {act['action']} DENIED by user - choose another approach or finish")
                         entry["denied"] = True; logf.write(json.dumps(entry) + "\n"); continue
                 try:
-                    self.make_executor(scale).execute(denormalize(act, img.width, img.height) if norm else act)
+                    ex = self.make_executor(scale); ex.offset = step_offset
+                    ex.execute(denormalize(act, img.width, img.height) if norm else act)
                     history.append(f"{step}: {json.dumps(logged)}"); last_idx = len(history) - 1
                 except Exception as e:
                     if type(e).__name__ == "FailSafeException": raise
@@ -683,6 +739,8 @@ class Agent:
             self.kill.stop(); logf.close()
         self.log(f"Result: {result}")
         return result
+
+DESKTOP_FORBIDDEN = {"open_url", "web_search", "first_video"}
 
 ROUTER = """You are the router for a local assistant that can also control the user's computer.
 Decide whether the user's latest message needs the computer (opening sites/apps, clicking, typing, searching
