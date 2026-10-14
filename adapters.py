@@ -50,8 +50,9 @@ IDLE_TITLES = re.compile(r"^(spotify( premium| free)?|spotify)$", re.I)
 class SpotifyPlay:
     """'open spotify and play <X>': spotify:search:<X> -> wait for 'Search results' -> press Play on the best row
     (the top result card's Play button or the track row's 'Play <title>') -> verify the window title became 'Artist - Song'."""
-    def __init__(self, query, rows_fn=None, title_fn=None, sleep=time.sleep, timeout=15.0):
+    def __init__(self, query, rows_fn=None, title_fn=None, sleep=time.sleep, timeout=25.0, playing_fn=None, main_play_fn=None):
         self.query = query
+        self.playing_fn, self.main_play_fn = playing_fn, main_play_fn
         self.launch_uri = "spotify:search:" + urllib.parse.quote(query)
         self.rows_fn, self.title_fn, self.sleep, self.timeout = rows_fn, title_fn, sleep, timeout
 
@@ -77,6 +78,33 @@ class SpotifyPlay:
             rows.append((name, press if btn is not None else None))
         return rows
 
+    def _playing_uia(self, hwnd):
+        """Spotify shows a 'Pause' button in the player bar while something plays."""
+        import uiautomation as auto
+        return auto.ControlFromHandle(int(hwnd)).ButtonControl(searchDepth=40, Name="Pause").Exists(0.3)
+
+    def _main_play_uia(self, hwnd):
+        import uiautomation as auto
+        b = auto.ControlFromHandle(int(hwnd)).ButtonControl(searchDepth=40, Name="Play")
+        if b.Exists(0.5):
+            try: b.GetInvokePattern().Invoke()
+            except Exception: b.Click(simulateMove=False)
+            return True
+        return False
+
+    def _verify(self, title_fn, playing_fn, name, before, polls=10):
+        for _ in range(polls):
+            self.sleep(0.5)
+            title = (title_fn() or "").strip()
+            playing = False
+            try: playing = bool(playing_fn())
+            except Exception: pass
+            if playing and title and not IDLE_TITLES.match(title) and " - " in title:
+                return title
+            if playing and _n(name) and _n(name) in _n(title):
+                return title
+        return None
+
     def run(self, agent, logf=None):
         b = getattr(agent, "app_binding", None)
         if b is None: return None
@@ -93,16 +121,20 @@ class SpotifyPlay:
         if not pick: return None
         name, press = pick
         if not b.ensure(): raise RuntimeError("Spotify isn't in front")
+        playing_fn = self.playing_fn or (lambda: self._playing_uia(b.hwnd))
+        main_play = self.main_play_fn or (lambda: self._main_play_uia(b.hwnd))
         before = title_fn() or ""
         press()
         if logf: logf.write('{"spotify_play": %s}\n' % __import__("json").dumps(name))
-        for _ in range(16):
-            self.sleep(0.5)
-            title = (title_fn() or "").strip()
-            if title and not IDLE_TITLES.match(title) and " - " in title and title != before:
-                return f"Playing \"{title}\" in Spotify (searched for \"{self.query}\")."
-            if title and title == before and " - " in title and _n(name) in _n(title):
-                return f"Playing \"{title}\" in Spotify (searched for \"{self.query}\")."
+        title = self._verify(title_fn, playing_fn, name, before)
+        if not title:  # the row's Play can toggle (track already loaded but paused): use the player's main Play once
+            if not b.ensure(): raise RuntimeError("Spotify isn't in front")
+            try: playing = bool(playing_fn())
+            except Exception: playing = False
+            if not playing and main_play():
+                title = self._verify(title_fn, playing_fn, name, before, polls=8)
+        if title:
+            return f"Playing \"{title}\" in Spotify (searched for \"{self.query}\")."
         return None
 
 def for_app(app, task):

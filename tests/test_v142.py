@@ -79,7 +79,8 @@ class SpotifyAdapter(unittest.TestCase):
         pressed = []; titles = iter(["Spotify Premium", "Spotify Premium", "Vive - Gettin Money"])
         rows = [("The Cayo Perico Heist", lambda: pressed.append("cayo")), ("Gettin Money", lambda: pressed.append("gm")),
                 ("Gettin Money - Slowed Version", lambda: pressed.append("slow"))]
-        sp = adapters.SpotifyPlay("gettin money", rows_fn=lambda: rows, title_fn=lambda: next(titles, "Vive - Gettin Money"), sleep=lambda s: None)
+        sp = adapters.SpotifyPlay("gettin money", rows_fn=lambda: rows, title_fn=lambda: next(titles, "Vive - Gettin Money"), sleep=lambda s: None,
+                                  playing_fn=lambda: bool(pressed))
         self.assertEqual(sp.launch_uri, "spotify:search:gettin%20money")
         agent = mock.Mock(); agent.app_binding.ensure.return_value = True
         r = sp.run(agent)
@@ -90,8 +91,28 @@ class SpotifyAdapter(unittest.TestCase):
         with self.assertRaises(RuntimeError): sp.run(agent)
     def test_unverified_returns_none(self):
         agent = mock.Mock(); agent.app_binding.ensure.return_value = True
-        sp = adapters.SpotifyPlay("abc", rows_fn=lambda: [("abc", lambda: None)], title_fn=lambda: "Spotify Premium", sleep=lambda s: None)
+        sp = adapters.SpotifyPlay("abc", rows_fn=lambda: [("abc", lambda: None)], title_fn=lambda: "Spotify Premium", sleep=lambda s: None,
+                                  playing_fn=lambda: False, main_play_fn=lambda: False)
         self.assertIsNone(sp.run(agent))
+    def test_toggle_case_uses_main_play(self):
+        st = {"playing": False}
+        agent = mock.Mock(); agent.app_binding.ensure.return_value = True
+        sp = adapters.SpotifyPlay("gettin money", rows_fn=lambda: [("Gettin Money", lambda: None)], title_fn=lambda: "Vive - Gettin Money" if st["playing"] else "Spotify Premium",
+                                  sleep=lambda s: None, playing_fn=lambda: st["playing"], main_play_fn=lambda: st.update(playing=True) or True)
+        self.assertIn("Vive - Gettin Money", sp.run(agent))
+    def test_close_button_never_clicked(self):
+        from PIL import Image
+        import core
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 2, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "planner": False,
+                                                                 "chrome_extension": False, "app_start_wait_s": 0, "app_ui": False, "plan": False}, "safety": {}}
+        client = mock.MagicMock(); client.chat.side_effect = ['{"action":"hotkey","keys":["alt","f4"]}', '{"action":"done","summary":"x"}']
+        ex = mock.Mock(last_info="")
+        a = core.Agent(cfg, log=lambda m: None, gui=mock.Mock(), client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex)
+        b = mock.Mock(app="Discord"); b.bind.return_value = {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}
+        b.ensure.return_value = True; b.window_rect.return_value = [0, 0, 800, 600]
+        a.binding_factory = lambda app: b
+        a.run("open discord and find the music channel")
+        self.assertEqual([c.args[0]["action"] for c in ex.execute.call_args_list], ["open_app"])
     def test_for_app_and_verbatim(self):
         a = adapters.for_app("spotify", "can you open spotify then play gettin money")
         self.assertEqual(a.query, "gettin money")
@@ -150,3 +171,9 @@ class DesktopActionSet(unittest.TestCase):
         e.execute({"action": "click", "x": 10, "y": 20}); e.gui.click.assert_called_with(110, 70)
 
 if __name__ == "__main__": unittest.main()
+
+class DialogNotBound(unittest.TestCase):
+    def test_not_responding_dialog_skipped(self):
+        ws = [{"hwnd": 1, "title": "Spotify", "cls": "#32770", "proc": "Spotify.exe", "exe": "", "w": 486, "h": 239},
+              {"hwnd": 2, "title": "Spotify Premium", "cls": "Chrome_WidgetWin_1", "proc": "Spotify.exe", "exe": "", "w": 1400, "h": 900}]
+        self.assertEqual(winbind.pick(ws, winbind.exe_hints("spotify"), "spotify")["hwnd"], 2)

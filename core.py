@@ -501,9 +501,13 @@ class Agent:
                     try:
                         res = adapter.run(self, logf)
                         if res: return finish(res)
+                        why = "the result didn't start playing"
                     except Exception as e:
-                        self.log(f"[app] {app} shortcut flow failed ({type(e).__name__}: {e}); continuing step by step")
+                        why = f"{type(e).__name__}: {e}"
                         logf.write(json.dumps({"adapter_error": str(e)}) + "\n")
+                    if not a_cfg.get("adapter_fallback_loop", False):
+                        return finish(f"stopped: I opened {app} and searched for \"{adapter.query}\", but couldn't confirm playback ({why}). "
+                                      "The results are on screen - press Play on the one you want.")
                 history.append(f"1: open_app {app} (done) - it is open and focused; now do the rest of the task inside it")
                 hk = __import__("adapters").hint(app)
                 if hk: history.append("(note) " + hk)
@@ -672,6 +676,13 @@ class Agent:
                 act = self.fix_browser(act)
                 import policy
                 why = policy.check(act, task)
+                if not why and getattr(self, "app_binding", None) is not None:
+                    el_name = ""
+                    if act["action"] in ("click_element", "type_element") and isinstance(getattr(self.dom, "last", None), dict):
+                        el_name = next((str(e.get("text", "")) for e in self.dom.last.get("elements", []) if str(e.get("id")) == str(act.get("id"))), "")
+                    if re.fullmatch(r"\s*(close|minimi[sz]e|maximi[sz]e|restore|exit|quit)\s*", el_name, re.I) or \
+                            (act["action"] == "hotkey" and {k.lower() for k in act.get("keys", [])} in ({"alt", "f4"}, {"ctrl", "w"}, {"command", "q"}, {"command", "w"})):
+                        why = f"closing or minimizing {self.app_binding.app} isn't part of this task"
                 if not why and self.desktop_only and getattr(self, "desktop_app_name", "") and not getattr(self, "desktop_web_ok", False):
                     if act["action"] in DESKTOP_FORBIDDEN or (act["action"] == "open_app" and act.get("app") and intents.named_browser(str(act.get("app")))) or \
                             (act["action"] == "hotkey" and {k.lower() for k in act.get("keys", [])} in ({"ctrl", "t"}, {"command", "t"})):

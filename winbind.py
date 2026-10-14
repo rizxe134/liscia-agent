@@ -38,6 +38,7 @@ def pick(windows, hints, app_name=""):
     for w in windows:
         if not w.get("visible", True) or w.get("w", 1) < 120 or w.get("h", 1) < 80: continue
         if HELPER_TITLES.match((w.get("title") or "").strip()): continue
+        if w.get("cls") == "#32770": continue  # message boxes / "not responding" dialogs are not the app window
         proc, exe = _norm(w.get("proc")), _norm(os.path.basename(str(w.get("exe") or "")))
         title = _norm(w.get("title"))
         score = 0
