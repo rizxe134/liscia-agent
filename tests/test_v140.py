@@ -178,3 +178,35 @@ class AgentDesktopApp(unittest.TestCase):
         ex.execute.assert_called_once_with({"action": "open_app", "app": "Spotify"}); self.assertIn("Opened", r); client.chat.assert_not_called()
 
 if __name__ == "__main__": unittest.main()
+
+
+class V141(unittest.TestCase):
+    def test_uia_ctrl_used_not_coords(self):
+        ctrl = mock.Mock(); g = mock.Mock()
+        raw = [dict(UIA_RAW[3], ctrl=ctrl), dict(UIA_RAW[4], ctrl=mock.Mock())]
+        ui = appui.AppUI(gui=g, raw_fn=lambda: ("Notepad.exe", "Untitled - Notepad", raw)); ui.snapshot()
+        self.assertEqual(ui.first_typable()["text"], "Text editor")
+        ui.type_into(1, "hello world")
+        ctrl.SetFocus.assert_called_once(); g.click.assert_not_called(); g.write.assert_called_with("hello world", interval=0.02)
+        ui.click(2); raw[1]["ctrl"].GetInvokePattern.return_value.Invoke.assert_called_once()
+    def test_open_and_type_fast_path(self):
+        from PIL import Image
+        import core
+        cfg = {"ollama": {"host": "x", "model": "m"}, "agent": {"max_steps": 2, "runs_dir": "/tmp/pcagent-test", "step_delay_s": 0, "planner": False,
+                                                                 "chrome_extension": False, "app_start_wait_s": 0}, "safety": {}}
+        client = mock.MagicMock(); g = mock.Mock(); ex = mock.Mock(last_info="launched Notepad")
+        state = {"v": ""}
+        def raw_fn():
+            return ("Notepad.exe", "Untitled - Notepad", [dict(UIA_RAW[3], value=state["v"], ctrl=mock.Mock())])
+        g.write.side_effect = lambda t, interval=0: state.update(v=t)
+        a = core.Agent(cfg, log=lambda m: None, gui=g, client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex)
+        with mock.patch("appui.focus_window", return_value=True), mock.patch("appui.AppUI.__init__", lambda self, **k: (setattr(self, "gui", g), setattr(self, "raw_fn", raw_fn), setattr(self, "limit", 60), setattr(self, "last", {"elements": []}))[0]):
+            r = a.run("open notepad and type hello world")
+        self.assertIn('typed "hello world"', r); client.chat.assert_not_called(); client.text_chat.assert_not_called()
+
+class V141NoClobber(unittest.TestCase):
+    def test_refuses_existing_text(self):
+        raw = [dict(UIA_RAW[3], value="Dear Professor...", ctrl=mock.Mock())]
+        ui = appui.AppUI(gui=mock.Mock(), raw_fn=lambda: ("Notepad.exe", "Letter - Notepad", raw)); ui.snapshot()
+        with self.assertRaises(RuntimeError): ui.type_into(1, "hello world")
+        raw[0]["ctrl"].SetFocus.assert_not_called()

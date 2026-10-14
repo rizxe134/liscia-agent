@@ -34,8 +34,10 @@ def parse_elements(raw, limit=80, screen=None):
         key = (role, name, l // 4, t // 4)
         if key in seen: continue
         seen.add(key)
-        out.append({"id": len(out) + 1, "tag": role, "type": "", "text": name or ("(" + role + ")"), "value": value,
-                    "x": (l + rr) // 2, "y": (t + b) // 2, "typable": role in TYPABLE})
+        el = {"id": len(out) + 1, "tag": role, "type": "", "text": name or ("(" + role + ")"), "value": value,
+              "x": (l + rr) // 2, "y": (t + b) // 2, "typable": role in TYPABLE}
+        if e.get("ctrl") is not None: el["_ctrl"] = e["ctrl"]
+        out.append(el)
         if len(out) >= limit: break
     return out
 
@@ -66,8 +68,12 @@ def win_raw(max_depth=12, max_nodes=600):
             try:
                 vp = ctrl.GetValuePattern(); val = vp.Value if vp else ""
             except Exception: pass
+            if not val and ctrl.ControlTypeName in ("DocumentControl", "EditControl"):
+                try:
+                    tp = ctrl.GetTextPattern(); val = tp.DocumentRange.GetText(200) if tp else ""
+                except Exception: pass
             raw.append({"role": ctrl.ControlTypeName, "name": ctrl.Name, "value": val, "rect": [r.left, r.top, r.right, r.bottom],
-                        "enabled": bool(ctrl.IsEnabled), "offscreen": bool(ctrl.IsOffscreen)})
+                        "enabled": bool(ctrl.IsEnabled), "offscreen": bool(ctrl.IsOffscreen), "ctrl": ctrl})
         except Exception: continue
     return app, title, raw
 
@@ -114,13 +120,53 @@ class AppUI:
         raise RuntimeError(f"no element {element_id} in the app element list")
 
     def click(self, element_id):
-        e = self._el(element_id)
+        """Windows: act through UI Automation on the element itself (Invoke / focus / its own DPI-correct Click),
+        never raw screen coordinates (UIA rects are physical pixels; the mouse may be in logical pixels)."""
+        e = self._el(element_id); c = e.get("_ctrl")
+        if c is not None:
+            if e["tag"] in TYPABLE:
+                c.SetFocus(); return e
+            try:
+                ip = c.GetInvokePattern()
+                if ip: ip.Invoke(); return e
+            except Exception: pass
+            try: c.Click(simulateMove=False); return e
+            except Exception: pass
         g = self.gui or __import__("pyautogui")
         g.moveTo(e["x"], e["y"], duration=0.15); g.click(e["x"], e["y"])
         return e
 
-    def type_into(self, element_id, text, press_enter=False):
+    def new_document(self):
+        """Ctrl+N in the focused app (new blank document / tab)."""
+        el = self.first_typable() or (self.last.get("elements") or [None])[0]
+        c = el.get("_ctrl") if el else None
+        if c is not None and IS_WIN: c.SendKeys("{Ctrl}n", waitTime=0.8)
+        else:
+            g = self.gui or __import__("pyautogui"); g.hotkey("command" if IS_MAC else "ctrl", "n"); time.sleep(0.8)
+        return self.snapshot()
+
+    def first_typable(self):
+        for e in self.last.get("elements", []):
+            if e.get("typable"): return e
+        return None
+
+    def type_into(self, element_id, text, press_enter=False, allow_existing=False):
+        e = self._el(element_id)
+        if e.get("value") and not allow_existing:  # never type into someone's existing text (e.g. a restored Notepad tab)
+            raise RuntimeError(f"element {element_id} already contains text that isn't from this task - open a new blank document/field first")
         e = self.click(element_id); time.sleep(0.2)
+        c = e.get("_ctrl")
+        if c is not None and hasattr(c, "SendKeys") and not isinstance(c, type(None)) and IS_WIN:
+            import uiautomation as auto  # paste through the clipboard (exact text, any language), then restore the clipboard
+            try: old = auto.GetClipboardText()
+            except Exception: old = None
+            auto.SetClipboardText(text); time.sleep(0.05)
+            c.SendKeys("{Ctrl}v" + ("{Enter}" if press_enter else ""), waitTime=0.2)
+            time.sleep(0.2)
+            if old is not None:
+                try: auto.SetClipboardText(old)
+                except Exception: pass
+            return e
         g = self.gui or __import__("pyautogui")
         if text.isascii(): g.write(text, interval=0.02)
         else:

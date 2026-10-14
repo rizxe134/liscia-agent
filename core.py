@@ -471,6 +471,24 @@ class Agent:
                 except Exception as e:
                     self.log(f"[app] structured view unavailable ({type(e).__name__}); using screenshots")
                 history.append(f"1: open_app {app} (done) - it is open and focused; now do the rest of the task inside it")
+                # fast path: "open X and type Y" -> type into the app's text area directly, verify, done
+                m_t = re.search(r"\b(?:type|write|enter)\s+(?:in\s+|out\s+)?[\"']?(.+?)[\"']?\s*$", task, re.I)
+                if m_t and hasattr(self.dom, "first_typable") and not re.search(r"\b(and|then)\b.*\b(save|send|click|press)\b", m_t.group(1), re.I):
+                    try:
+                        self.dom.snapshot(); el = self.dom.first_typable()
+                        if el and el.get("value"):  # the app opened on existing content: use a new blank document, never append to it
+                            self.dom.new_document(); el = self.dom.first_typable()
+                            if el and el.get("value"):
+                                return finish(f"Opened {app}, but its text area already has content, so I didn't type into it. Open a blank document and ask again.")
+                        if el:
+                            text = m_t.group(1).strip()
+                            self.dom.type_into(el["id"], text); time.sleep(0.4)
+                            after = self.dom.snapshot(); val = next((e.get("value", "") for e in after.get("elements", []) if e.get("typable")), "")
+                            logf.write(json.dumps({"app_type": text, "element": el["text"], "readback": val[:80]}) + "\n")
+                            if text.lower() in (val or "").lower() or not val:
+                                return finish(f"Opened {app} and typed \"{text}\"." + ("" if val else " (couldn't read it back to double-check)"))
+                    except Exception as e:
+                        self.log(f"[app] direct typing failed ({type(e).__name__}: {e}); continuing step by step")
         # 0) web task + Chrome extension connected: do it all through the extension (no screenshots)
         if ext_ok and pl["intent"] != "desktop_app" or self.use_extension(task) and pl["intent"] != "desktop_app":
             try:
