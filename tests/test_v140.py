@@ -186,7 +186,7 @@ class V141(unittest.TestCase):
         raw = [dict(UIA_RAW[3], ctrl=ctrl), dict(UIA_RAW[4], ctrl=mock.Mock())]
         ui = appui.AppUI(gui=g, raw_fn=lambda: ("Notepad.exe", "Untitled - Notepad", raw)); ui.snapshot()
         self.assertEqual(ui.first_typable()["text"], "Text editor")
-        ui.type_into(1, "hello world")
+        with mock.patch.object(appui, "IS_WIN", False): ui.type_into(1, "hello world")
         ctrl.SetFocus.assert_called_once(); g.click.assert_not_called(); g.write.assert_called_with("hello world", interval=0.02)
         ui.click(2); raw[1]["ctrl"].GetInvokePattern.return_value.Invoke.assert_called_once()
     def test_open_and_type_fast_path(self):
