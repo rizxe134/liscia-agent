@@ -427,7 +427,8 @@ class Agent:
         try:
             import appfirst, commands
             if a_cfg.get("app_first", True):
-                pl, why = appfirst.override(pl, task, idx=getattr(self, "app_index", None), running=getattr(self, "running_apps", None),
+                inj = getattr(self, "_injected_exec", False)  # tests: never the real machine's apps
+                pl, why = appfirst.override(pl, task, idx=getattr(self, "app_index", [] if inj else None), running=getattr(self, "running_apps", set() if inj else None),
                                             is_command=bool(commands.parse(task, "x")))
                 if why: self.log(f"[plan] {why}"); logf.write(json.dumps({"app_first": why}) + "\n")
         except Exception as e:

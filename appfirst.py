@@ -16,6 +16,11 @@ type write make create do get set put give tell help""".split())
 AUDIO_APP_HINT = {"music app": "music", "apple music": "music", "itunes": "music", "groove": "media player", "windows media player": "media player",
                   "media player": "media player", "vs code": "visual studio code", "vscode": "visual studio code"}
 
+SYSTEM_PROCS = set("""system idle svchost csrss wininit winlogon services lsass smss dwm explorer conhost fontdrvhost sihost ctfmon
+runtimebroker searchhost searchindexer startmenuexperiencehost shellexperiencehost textinputhost dllhost taskhostw audiodg spoolsv
+wmiprvse securityhealthservice msmpeng nissrv registry memory compression applicationframehost systemsettings lockapp
+python py pythonw powershell pwsh cmd launchd kernel_task windowserver loginwindow mds mdworker coreaudiod""".split())
+
 def explicit_web(task):
     return bool(EXPLICIT_WEB.search(task or ""))
 
@@ -55,7 +60,8 @@ def mention(task, idx=None, running=None):
         q = AUDIO_APP_HINT.get(s, s)
         if len(q.replace(" ", "")) < 3: continue
         e = appindex.find(q, idx, cutoff=0.84) or swapped(q, idx)
-        run = next((r for r in running if appindex.score(appindex.norm(q), appindex.norm(r)) >= 0.86 or (e and appindex.norm(r) in exe_names(e))), None)
+        run = next((r for r in running if r not in SYSTEM_PROCS and len(r) >= 4 and (appindex.norm(q) == appindex.norm(r) or
+                    (" " not in q and len(q) >= 5 and appindex.score(appindex.norm(q), appindex.norm(r)) >= 0.86) or (e and appindex.norm(r) in exe_names(e)))), None)
         if e or run:
             sc = len(words)
             if not best or sc > best[0]:
