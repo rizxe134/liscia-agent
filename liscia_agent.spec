@@ -2,14 +2,14 @@
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 MAC, WIN = sys.platform == "darwin", sys.platform.startswith("win")
-VERSION = "1.4.3"
+VERSION = "1.4.4"
 
-hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "planner", "policy", "appindex", "appui", "winbind", "adapters", "docx", "openpyxl", "pptx", "psutil"]
+hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "planner", "policy", "appindex", "appui", "winbind", "adapters", "commands", "appfirst", "docx", "openpyxl", "pptx", "psutil"]
 hidden += [m for m in collect_submodules("pynput") if ("_darwin" in m if MAC else "_win32" in m if WIN else "_xorg" in m) or m.count(".") <= 1]
 if MAC: hidden += ["Quartz", "AppKit", "Foundation", "objc"]
 if WIN: hidden += ["uiautomation", "comtypes", "comtypes.client", "comtypes.stream"] + collect_submodules("comtypes")
 
-a = Analysis(["agent.py"], pathex=["."], datas=[("config.yaml", "."), ("icon.png", "."), ("icon.ico", ".")] + collect_data_files("docx") + collect_data_files("openpyxl") + collect_data_files("pptx") + (collect_data_files("uiautomation") if WIN else []),
+a = Analysis(["agent.py"], pathex=["."], datas=[("config.yaml", "."), ("smtc.ps1", "."), ("app_hints.json", "."), ("icon.png", "."), ("icon.ico", ".")] + collect_data_files("docx") + collect_data_files("openpyxl") + collect_data_files("pptx") + (collect_data_files("uiautomation") if WIN else []),
              hiddenimports=hidden, excludes=["pytest"], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="Liscia Agent", console=False,

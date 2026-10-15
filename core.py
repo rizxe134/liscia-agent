@@ -105,6 +105,7 @@ class LoopGuard:
 class Agent:
     def __init__(self, cfg, confirm=console_confirm, log=print, gui=None, capture=None, client=None, executor=None, dom=None):
         self.cfg, self.confirm, self.log = cfg, confirm, log
+        self.media_runner = None
         o, s = cfg["ollama"], cfg["safety"]
         self.client = client or OllamaClient(o["host"], o["model"], o.get("fallback_model", ""),
                                              o.get("temperature", 0.1), o.get("timeout_s", 180),
@@ -422,6 +423,15 @@ class Agent:
         ext_ok = self.cfg["agent"].get("chrome_extension", True) and self.link().connected()
         t_plan = time.time()
         pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True), log=self.log)
+        # APP-FIRST (1.4.4): a task that names an installed/running app is about that app, never its website
+        try:
+            import appfirst, commands
+            if a_cfg.get("app_first", True):
+                pl, why = appfirst.override(pl, task, idx=getattr(self, "app_index", None), running=getattr(self, "running_apps", None),
+                                            is_command=bool(commands.parse(task, "x")))
+                if why: self.log(f"[plan] {why}"); logf.write(json.dumps({"app_first": why}) + "\n")
+        except Exception as e:
+            self.log(f"[plan] app-first check skipped ({type(e).__name__})")
         self.plan_info = pl
         logf.write(json.dumps({"plan": pl, "secs": round(time.time() - t_plan, 1)}) + "\n")
         self.log(f"[plan] {pl['intent']}" + (f" -> {', '.join(pl['outputs'])}" if pl["outputs"] else "") + (f" | {pl['query']}" if pl.get("query") else "") +
@@ -448,6 +458,15 @@ class Agent:
             except Exception as e:
                 logf.write(json.dumps({"web_error": str(e)}) + "\n")
                 return finish(f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})")
+        try:  # "pause the music" / "next song" with no app named: the system's current media session
+            import commands, appfirst
+            c0 = commands.parse(task, "")
+            if c0 and c0["kind"] == "media" and not (pl["intent"] == "desktop_app" and pl.get("app")) and not appfirst.explicit_web(task):
+                logf.write(json.dumps({"command": c0, "app": ""}) + "\n")
+                res = (self.media_runner or commands.run_media)(c0["verb"], "")
+                logf.write(json.dumps({"command_result": res}) + "\n"); return finish(res)
+        except Exception as e:
+            self.log(f"[app] media command check failed ({type(e).__name__})")
         self.desktop_only = pl["intent"] == "desktop_app"
         self.app_binding = None
         self.desktop_app_name = pl.get("app", "") if self.desktop_only else ""
@@ -462,11 +481,38 @@ class Agent:
                 logf.write(json.dumps({"blocked": lbl}) + "\n")
                 return finish(policy.message(lbl))
             if app:
-                import adapters, winbind
+                import adapters, winbind, commands, appfirst
                 t0 = time.time()
+                # UNIVERSAL CONTROLS (1.4.4): media / window / standard app actions for any app, no model call
+                cmd = commands.parse(task, app)
+                if cmd:
+                    logf.write(json.dumps({"command": cmd, "app": app}) + "\n")
+                    self.log(f"[app] {cmd['kind']} command '{cmd['verb']}' for {app}")
+                    if cmd["kind"] == "media":
+                        res = (self.media_runner or commands.run_media)(cmd["verb"], app)
+                        logf.write(json.dumps({"command_result": res}) + "\n")
+                        return finish(res)
+                    binding = self.make_binding(app)
+                    if binding is None or not binding.bind(timeout=3):
+                        return finish(f"stopped: {app} isn't open, so there's no window to {cmd['verb'].replace('_', ' ')}.")
+                    self.app_binding = binding
+                    logf.write(json.dumps({"bound_window": {k: binding.info.get(k) for k in ("hwnd", "title", "proc", "pid")}}) + "\n")
+                    res = commands.run_window(cmd["verb"], binding, confirm=self.confirm) if cmd["kind"] == "window" else \
+                        commands.run_action(cmd["verb"], binding, gui=self.gui, confirm=self.confirm)
+                    logf.write(json.dumps({"command_result": res}) + "\n")
+                    return finish(res)
                 adapter = adapters.for_app(app, task)
+                # RUNNING APP (1.4.4): bind to its existing main window instead of relaunching
+                pre, pre_w = None, None
+                if not (adapter and adapter.launch_uri):
+                    pre = self.make_binding(app)
+                    pre_w = pre.bind(timeout=0.5) if pre is not None else None
+                    if not pre_w: pre = None
                 try:
-                    if adapter and adapter.launch_uri:
+                    if pre is not None:
+                        info = f"{app} is already running; using its window"
+                        self.log(f"[app] {info}"); logf.write(json.dumps({"app_running": app}) + "\n")
+                    elif adapter and adapter.launch_uri:
                         adapters.open_uri(adapter.launch_uri); info = f"opened {adapter.launch_uri}"
                     else:
                         ex = self.make_executor(1.0); ex.execute({"action": "open_app", "app": app})
@@ -478,12 +524,14 @@ class Agent:
                     return finish(f"stopped: couldn't open {app} ({type(e).__name__}: {e}). Is it installed?")
                 just_open = planner.rule_plan(task).get("sure") or re.match(r"^\W*(?:\w+\W+){0,3}?(open|launch|start|run)\s+(the\s+)?" + re.escape(app) + r"(\s+app)?\W*$", task, re.I)
                 if just_open and not adapter:
+                    if pre is not None:
+                        pre.ensure(); return finish(f"{app} was already open; brought its window to the front.")
                     return finish(f"Opened {app}.")
                 skip_fast = True
                 # BIND the run to the launched app's own window; every later step is scoped to it
-                binding = self.make_binding(app)
+                binding = pre or self.make_binding(app)
                 if binding is not None:
-                    w = binding.bind(timeout=a_cfg.get("app_window_timeout_s", 15))
+                    w = pre_w if pre is not None else binding.bind(timeout=a_cfg.get("app_window_timeout_s", 15))
                     if not w:
                         return finish(f"stopped: {app} was launched but its window didn't appear, so I didn't act on any other window.")
                     if not binding.ensure():

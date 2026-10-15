@@ -11,8 +11,30 @@ SEARCH_KEYS = {"spotify": "Ctrl+K (search)", "discord": "Ctrl+K (quick switcher:
                "slack": "Ctrl+K (jump to a channel or person)", "microsoft teams": "Ctrl+E (search)", "teams": "Ctrl+E (search)",
                "notion": "Ctrl+P (search)", "obsidian": "Ctrl+O (open note)", "steam": "Ctrl+F not available - use the Library search box"}
 
+def hints_table():
+    """Built-in app_hints.json, extended/overridden by <data dir>/app_hints.json (user-editable)."""
+    import json, os, sys
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    t = {}
+    paths_ = [os.path.join(base, "app_hints.json")]
+    try:
+        import paths; paths_.append(os.path.join(paths.data_dir(), "app_hints.json"))
+    except Exception: pass
+    for p in paths_:
+        try:
+            for k, v in json.load(open(p, encoding="utf-8")).items():
+                if not k.startswith("_") and isinstance(v, dict): t.setdefault(k.lower(), {}).update(v)
+        except Exception: pass
+    return t
+
 def hint(app):
     a = str(app or "").lower()
+    if not a: return ""
+    tbl = hints_table()
+    keys = sorted((k for k in tbl if k == a or k in a or (len(a) >= 4 and a in k)), key=len, reverse=True)
+    if keys and tbl[keys[0]]:
+        shown = ", ".join(f"{v.replace('ctrl', 'Ctrl').replace('shift', 'Shift').replace('cmd', 'Cmd')} ({k.replace('_', ' ')})" for k, v in tbl[keys[0]].items())
+        return f"Keyboard shortcuts in {app}: {shown}. Prefer keyboard shortcuts in this app."
     for k, v in SEARCH_KEYS.items():
         if k in a: return f"Keyboard shortcut in {app}: {v}. Prefer keyboard shortcuts in this app."
     return ""

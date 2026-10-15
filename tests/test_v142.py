@@ -67,7 +67,7 @@ class NeverWrongWindow(unittest.TestCase):
         client = mock.MagicMock(); client.chat.return_value = '{"action":"click","x":5,"y":5}'
         ex = mock.Mock(last_info="launched Discord")
         a = core.Agent(cfg, log=lambda m: None, gui=mock.Mock(), client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex)
-        b = mock.Mock(app="Discord"); b.bind.return_value = {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}
+        b = mock.Mock(app="Discord"); b.bind.side_effect = [None, {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}]
         b.ensure.side_effect = [True, False]; b.window_rect.return_value = [0, 0, 800, 600]
         a.binding_factory = lambda app: b
         r = a.run("open discord and click the general channel")
@@ -108,7 +108,7 @@ class SpotifyAdapter(unittest.TestCase):
         client = mock.MagicMock(); client.chat.side_effect = ['{"action":"hotkey","keys":["alt","f4"]}', '{"action":"done","summary":"x"}']
         ex = mock.Mock(last_info="")
         a = core.Agent(cfg, log=lambda m: None, gui=mock.Mock(), client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex)
-        b = mock.Mock(app="Discord"); b.bind.return_value = {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}
+        b = mock.Mock(app="Discord"); b.bind.side_effect = [None, {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}]
         b.ensure.return_value = True; b.window_rect.return_value = [0, 0, 800, 600]
         a.binding_factory = lambda app: b
         a.run("open discord and find the music channel")
@@ -157,7 +157,7 @@ class DesktopActionSet(unittest.TestCase):
                                    '{"action":"hotkey","keys":["ctrl","t"]}', '{"action":"done","summary":"x"}']
         ex = mock.Mock(last_info="")
         a = core.Agent(cfg, log=lambda m: None, gui=mock.Mock(), client=client, capture=lambda: Image.new("RGB", (800, 600)), executor=lambda s: ex)
-        b = mock.Mock(app="Discord"); b.bind.return_value = {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}
+        b = mock.Mock(app="Discord"); b.bind.side_effect = [None, {"hwnd": 9, "title": "Discord", "proc": "Discord.exe", "pid": 1}]
         b.ensure.return_value = True; b.window_rect.return_value = [100, 100, 700, 500]
         a.binding_factory = lambda app: b
         a.run("open discord and find the music channel")

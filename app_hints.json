@@ -1,0 +1,18 @@
+{
+  "_doc": "Per-app shortcut hints (extensible). A user copy at <data dir>/app_hints.json overrides/extends these. Keys are lower-case app names.",
+  "spotify": {"search": "ctrl+k", "play_pause": "space", "next": "ctrl+right", "previous": "ctrl+left", "volume_up": "ctrl+up", "volume_down": "ctrl+down"},
+  "vlc": {"play_pause": "space", "next": "n", "previous": "p", "fullscreen": "f", "volume_up": "ctrl+up", "volume_down": "ctrl+down", "open": "ctrl+o"},
+  "visual studio code": {"command_palette": "ctrl+shift+p", "quick_open": "ctrl+p", "search": "ctrl+shift+f", "terminal": "ctrl+`"},
+  "discord": {"quick_switcher": "ctrl+k", "mute": "ctrl+shift+m"},
+  "slack": {"jump": "ctrl+k"},
+  "microsoft teams": {"search": "ctrl+e"},
+  "notion": {"search": "ctrl+p"},
+  "obsidian": {"open_note": "ctrl+o"},
+  "steam": {},
+  "notepad": {"new_tab": "ctrl+n", "find": "ctrl+f", "save": "ctrl+s"},
+  "microsoft word": {"find": "ctrl+f", "save": "ctrl+s", "bold": "ctrl+b"},
+  "microsoft excel": {"find": "ctrl+f", "save": "ctrl+s"},
+  "google chrome": {"address_bar": "ctrl+l", "new_tab": "ctrl+t", "find": "ctrl+f"},
+  "file explorer": {"address_bar": "ctrl+l", "search": "ctrl+e"},
+  "music": {"search": "cmd+f", "play_pause": "space"}
+}

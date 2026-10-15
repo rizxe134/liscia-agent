@@ -212,7 +212,7 @@ def requested_count(text):
     m = re.search(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:richest|best|biggest|largest|top)\b", text or "", re.I)
     return int(m.group(1) or m.group(2)) if m else None
 
-TYPOS = {"claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
+TYPOS = {"musiuc": "music", "musci": "music", "muisc": "music", "msuic": "music", "musik": "music", "spotfy": "spotify", "sptify": "spotify", "spoitfy": "spotify", "claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
          "serach": "search", "seach": "search", "saerch": "search", "searh": "search", "sreach": "search", "serch": "search",
          "youtueb": "youtube", "yotube": "youtube", "youtub": "youtube", "yt": "youtube", "youube": "youtube", "you tube": "youtube",
          "plya": "play", "paly": "play", "pley": "play", "opne": "open", "oepn": "open", "vidoe": "video", "vedio": "video",
