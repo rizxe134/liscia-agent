@@ -47,6 +47,29 @@ def _spans(t):
         if s and s not in seen: seen.add(s); out.append(s)
     return out
 
+VENDOR = re.compile(r"^(microsoft|google|adobe|mozilla|apple)\s+")
+
+def names_of(e):
+    """Whole-name forms a user would say: 'vlc media player' -> {'vlc media player', 'vlc'}; 'microsoft word' -> {'microsoft word', 'word'}."""
+    k = e["key"]; out = {k, VENDOR.sub("", k)}
+    first = k.split()[0] if k.split() else ""
+    if len(k.split()) > 1 and len(first) >= 3 and first not in COMMON and not VENDOR.match(k) and first not in ("windows", "add", "check", "click", "logi"):
+        if re.search(r"\b(player|media|desktop|client|launcher|app)\b", k): out.add(first)
+    return {n for n in out if n}
+
+def lookup(q, idx):
+    """Exact whole-name (or alias) match first, then a one-word typo. Never a prefix/partial ('page' is not 'Pageant')."""
+    import difflib
+    qa = appindex.norm(appindex.ALIASES.get(q, q))
+    for e in idx:
+        if q in names_of(e) or qa in names_of(e): return e
+    if " " in q or len(q) < 5 or q in COMMON: return None
+    for e in idx:
+        for k in names_of(e):
+            if " " in k or len(k) < 5 or k[0] != q[0] or abs(len(k) - len(q)) > 1: continue
+            if sorted(k) == sorted(q) or difflib.SequenceMatcher(None, q, k).ratio() >= 0.83: return e
+    return None
+
 def mention(task, idx=None, running=None):
     """The installed/running app a task names, e.g. 'can you pause the musiuc on spotify' -> ('Spotify', entry, running?)."""
     t = intents.fix_typos(task or "")
@@ -55,13 +78,12 @@ def mention(task, idx=None, running=None):
     best = None
     for s in _spans(t):
         words = s.split()
-        if all(x in COMMON for x in words): continue
-        if words[0] in COMMON and s not in AUDIO_APP_HINT: continue
-        q = AUDIO_APP_HINT.get(s, s)
+        if all(x in COMMON for x in words) and s not in AUDIO_APP_HINT: continue
+        if (words[0] in COMMON or words[-1] in COMMON) and s not in AUDIO_APP_HINT: continue
+        q = appindex.norm(AUDIO_APP_HINT.get(s, s))
         if len(q.replace(" ", "")) < 3: continue
-        e = appindex.find(q, idx, cutoff=0.84) or swapped(q, idx)
-        run = next((r for r in running if r not in SYSTEM_PROCS and len(r) >= 4 and (appindex.norm(q) == appindex.norm(r) or
-                    (" " not in q and len(q) >= 5 and appindex.score(appindex.norm(q), appindex.norm(r)) >= 0.86) or (e and appindex.norm(r) in exe_names(e)))), None)
+        e = lookup(q, idx)
+        run = next((r for r in running if r not in SYSTEM_PROCS and len(r) >= 4 and (q == appindex.norm(r) or (e and appindex.norm(r) in exe_names(e)))), None)
         if e or run:
             sc = len(words)
             if not best or sc > best[0]:
