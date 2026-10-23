@@ -18,3 +18,5 @@ tools/*.png
 dist/
 build/
 *.spec.bak
+chats/
+app_index.json

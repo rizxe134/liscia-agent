@@ -55,14 +55,26 @@ BRIDGE = None  # the running bridge (so the chat app can mirror its narration to
 STEP_RE = re.compile(r"^\[(\d+|fast)\]\s+(\w+)\s*(.*)$")
 
 class Bridge:
-    def __init__(self, cfg, token=None, agent_factory=None, router=None):
+    def __init__(self, cfg, token=None, agent_factory=None, router=None, store=None):
         self.cfg, self.hub, self.token = cfg, Hub(), token or load_token()
+        self._store = store
         self.history, self.busy, self.agent = [], False, None
         self.agent_factory, self.router = agent_factory, router
         self.lock = threading.Lock()
         import extlink
         self.link = extlink.LINK
         global BRIDGE; BRIDGE = self
+
+    @property
+    def store(self):
+        if self._store is None:
+            import chats; self._store = chats.store()
+            self._store.listeners.append(lambda what, cid: self.hub.emit("chats", what=what, id=cid))
+        return self._store
+
+    def chats_info(self):
+        cur = self.store.current()
+        return {"current": {"id": cur["id"], "title": cur["title"], "messages": cur["messages"][-40:]}, "chats": self.store.list()[:50]}
 
     def log(self, line):
         line = str(line); m = STEP_RE.match(line)
@@ -83,37 +95,45 @@ class Bridge:
                 self.agent.on_highlight = lambda **k: self.hub.emit("highlight", **k)
         return self.agent
 
-    def chat(self, text):
+    def chat(self, text, chat_id=None):
         with self.lock:
             if self.busy: return False
             self.busy = True
-        threading.Thread(target=self._chat, args=(text,), daemon=True).start(); return True
+        threading.Thread(target=self._chat, args=(text, chat_id), daemon=True).start(); return True
 
-    def _chat(self, text):
+    def _chat(self, text, chat_id=None):
         import slash
+        if text.strip().lower() in ("/new", "/newchat"):
+            c = self.store.new(); self.hub.emit("chat", text=f"New chat started."); self.busy = False
+            self.hub.emit("status", state="ready"); return
         if slash.is_local(text):  # slash commands never reach the model; the key is only shown in the app itself
             cmd = text.strip().split()[0].lower()
             self.hub.emit("chat", text=slash.HELP if cmd in ("/help", "/?", "/commands")
                           else "For safety the key is only shown in the Liscia Agent app: type /token there.")
-            self.hub.emit("status", state="idle"); return
+            self.hub.emit("status", state="idle"); self.busy = False; return
+        cid = None
         try:
             self.hub.emit("status", state="thinking")
             ag = self._get_agent()
             route = self.router or __import__("core").route
-            kind, out = route(ag.client, text, self.history, on_token=lambda p: self.hub.emit("token", text=p))
-            self.history += [{"role": "user", "content": text}]
+            st = self.store
+            cid = chat_id if chat_id and st.get(chat_id) else st.current()["id"]
+            history = st.history(cid); st.add(cid, "user", text)
+            ag.chat_id = cid
+            kind, out = route(ag.client, text, history, on_token=lambda p: self.hub.emit("token", text=p))
             if kind == "chat":
-                self.history.append({"role": "assistant", "content": out}); self.hub.emit("chat", text=out)
+                st.add(cid, "assistant", out); self.hub.emit("chat", text=out)
             else:
                 self.hub.emit("task", text=out); self.hub.emit("status", state="working")
                 ag.kill.event.clear()
                 res = ag.run(out)
-                self.history.append({"role": "assistant", "content": f"(computer task) {res}"})
+                run = os.path.basename(getattr(ag, "last_run_dir", "") or "") or None
+                st.add(cid, "assistant", f"(computer task) {res}", run=run)
                 self.hub.emit("result", text=res)
         except Exception as e:
             self.hub.emit("error", text=f"{type(e).__name__}: {e}")
         finally:
-            self.busy = False; self.history = self.history[-20:]; self.hub.emit("status", state="ready")
+            self.busy = False; self.hub.emit("status", state="ready")
 
     def stop(self, takeover=False):
         if self.agent: self.agent.kill.event.set()
@@ -154,6 +174,7 @@ def make_handler(bridge):
             if u.path == "/status":
                 return self._send(200, {"ok": True, "busy": bridge.busy, "panel_clients": len(bridge.hub.subs),
                                         "extension": bridge.link.status()})
+            if u.path == "/chats": return self._send(200, bridge.chats_info())
             if u.path == "/ext/poll":
                 info = {k: v[0] for k, v in qs.items() if k in ("version", "ua", "client")}
                 hold = min(float((qs.get("hold") or ["20"])[0]), 25.0)
@@ -182,7 +203,15 @@ def make_handler(bridge):
             if p == "/chat":
                 text = str(data.get("text", "")).strip()
                 if not text: return self._send(400, {"error": "empty"})
-                return self._send(200, {"accepted": bridge.chat(text), "busy": bridge.busy})
+                return self._send(200, {"accepted": bridge.chat(text, data.get("chat_id")), "busy": bridge.busy})
+            if p == "/chats/new":
+                if bridge.busy: return self._send(409, {"error": "busy"})
+                bridge.store.new(); return self._send(200, bridge.chats_info())
+            if p == "/chats/select":
+                if bridge.busy: return self._send(409, {"error": "busy"})
+                try: bridge.store.select(str(data.get("id", "")))
+                except (KeyError, ValueError): return self._send(404, {"error": "no such chat"})
+                return self._send(200, bridge.chats_info())
             if p == "/ext/result": return self._send(200, {"ok": bridge.link.result(data)})
             if p == "/ext/event":
                 bridge.link.event(data); return self._send(200, {"ok": True})

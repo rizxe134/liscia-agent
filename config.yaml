@@ -35,3 +35,12 @@ safety:
 panel:
   enabled: true   # Chrome side panel bridge (127.0.0.1 only, token-authenticated)
   port: 8765
+
+provider:
+  name: ollama          # ollama (local, default) | openai | anthropic | gemini  - change it in Settings (gear button)
+  fallback_local: true  # if the cloud provider fails, use the local Ollama models (when installed)
+  timeout_s: 60
+  openai: {text_model: gpt-4.1-mini, vision_model: gpt-4.1-mini}
+  anthropic: {text_model: claude-sonnet-4-5, vision_model: claude-sonnet-4-5}
+  gemini: {text_model: gemini-2.5-flash, vision_model: gemini-2.5-flash}
+  # API keys are NEVER stored here: Settings saves them in the OS keychain (macOS Keychain / Windows Credential Manager).

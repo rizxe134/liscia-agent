@@ -19,3 +19,7 @@ form{display:flex;align-items:center;gap:6px;padding:8px 10px;border-top:1px sol
 input{flex:1;background:#000;color:var(--fg);border:none;outline:none;font:inherit;caret-color:transparent}
 #tok{border:1px solid var(--dim);padding:3px;margin-right:6px;caret-color:var(--fg)}
 #cur{animation:blink 1s steps(1) infinite}@keyframes blink{50%{opacity:0}}
+#chatbar{display:flex;justify-content:space-between;align-items:center;padding:2px 8px;border-bottom:1px solid #00994d}
+#chatbar #chattitle{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65%}
+#chatbar button{background:#000;color:#00ff66;border:1px solid #00994d;font:inherit;cursor:pointer;padding:1px 6px}
+#chatbar button:hover{background:#00ff66;color:#000}

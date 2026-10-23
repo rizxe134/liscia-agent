@@ -52,10 +52,8 @@ NORM_SYSTEM = (SYSTEM
 
 def uses_norm_coords(cfg):
     """qwen3-vl (and similar) natively output 0-1000 normalized coordinates."""
-    mode = cfg.get("agent", {}).get("coord_mode", "auto")
-    if mode == "auto":
-        return "qwen3-vl" in cfg.get("ollama", {}).get("model", "").lower()
-    return mode == "norm1000"
+    import providers
+    return providers.norm_coords(cfg)
 
 def denormalize(act, w, h):
     """Convert 0-1000 coords to image pixels (in place copy)."""
@@ -67,6 +65,12 @@ def denormalize(act, w, h):
 def to_points(nx, ny, w, h, scale, ratio):
     """0-1000 -> screenshot image px (w,h) -> real screen px (*scale) -> points (*ratio)."""
     return int(round(nx * w / 1000.0 * scale * ratio)), int(round(ny * h / 1000.0 * scale * ratio))
+
+def transient_ui_error(e):
+    """UI Automation / COM hiccups that go away on a retry (e.g. -2147220991 'An event was unable to invoke any of the subscribers')."""
+    a = getattr(e, "args", ()) or ()
+    if a and isinstance(a[0], int) and a[0] < 0: return True  # COMError(hresult, ...)
+    return bool(re.search(r"unable to invoke any of the subscribers|element (is )?not available|UIA_E_|COMError|timed? ?out waiting", f"{type(e).__name__}: {e}", re.I))
 
 def load_config(path=None):
     if path is None:
@@ -107,10 +111,10 @@ class Agent:
         self.cfg, self.confirm, self.log = cfg, confirm, log
         self.media_runner = None
         o, s = cfg["ollama"], cfg["safety"]
-        self.client = client or OllamaClient(o["host"], o["model"], o.get("fallback_model", ""),
-                                             o.get("temperature", 0.1), o.get("timeout_s", 180),
-                                             text_model=o.get("text_model", ""), keep_alive=o.get("keep_alive", "30m"),
-                                             num_predict=o.get("num_predict", 200), num_ctx=o.get("num_ctx"))
+        if client is None:
+            import providers
+            client = providers.make_client(cfg, log=log)
+        self.client = client
         self.on_token = None  # UI sets this to stream model output
         use_dom = cfg["agent"].get("browser_dom", True) and IS_MAC
         self.dom = dom if dom is not None else (browser_dom.BrowserDOM(cfg["agent"].get("max_elements", 60), log=log) if use_dom else None)
@@ -405,8 +409,9 @@ class Agent:
         a_cfg, s_cfg = self.cfg["agent"], self.cfg["safety"]
         import paths
         run_dir = os.path.join(paths.runs_dir(a_cfg.get("runs_dir", "runs")), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-        os.makedirs(run_dir, exist_ok=True)
+        os.makedirs(run_dir, exist_ok=True); self.last_run_dir = run_dir
         logf = open(os.path.join(run_dir, "log.jsonl"), "a", encoding="utf-8")
+        if getattr(self, "chat_id", None): logf.write(json.dumps({"chat_id": self.chat_id}) + "\n")
         logf.write(json.dumps({"task": task}) + "\n")
         history, result, notes = [], "max steps reached", []
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
@@ -422,7 +427,13 @@ class Agent:
         import planner
         ext_ok = self.cfg["agent"].get("chrome_extension", True) and self.link().connected()
         t_plan = time.time()
-        pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True), log=self.log)
+        try:  # a clear media command ("pause spotify", "next song") needs no model call
+            import commands as _cmds, appfirst as _af
+            _c = _cmds.parse(task, "x")
+            fast_cmd = bool(_c and _c["kind"] == "media" and not _af.explicit_web(task))
+        except Exception: fast_cmd = False
+        pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True) and not fast_cmd, log=self.log)
+        if fast_cmd: pl["source"] = "rules (media command)"
         # APP-FIRST (1.4.4): a task that names an installed/running app is about that app, never its website
         try:
             import appfirst, commands
@@ -548,7 +559,13 @@ class Agent:
                     self.log(f"[app] structured view unavailable ({type(e).__name__}); using screenshots")
                 if adapter:
                     try:
-                        res = adapter.run(self, logf)
+                        try:
+                            res = adapter.run(self, logf)
+                        except Exception as e1:
+                            if not transient_ui_error(e1): raise
+                            logf.write(json.dumps({"adapter_retry": str(e1)}) + "\n")
+                            self.log(f"[app] the app's UI was busy ({type(e1).__name__}); retrying once")
+                            time.sleep(a_cfg.get("adapter_retry_s", 1.5)); res = adapter.run(self, logf)
                         if res: return finish(res)
                         why = "the result didn't start playing"
                     except Exception as e:

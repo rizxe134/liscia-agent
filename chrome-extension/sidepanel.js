@@ -1,7 +1,7 @@
 const BASE = "http://127.0.0.1:8765";
 const SPIN = ["[=     ]","[ =    ]","[  =   ]","[   =  ]","[    = ]","[     =]","[    = ]","[   =  ]","[  =   ]","[ =    ]"];
 const $ = (id) => document.getElementById(id);
-let token = "", es = null, busy = false, spinI = 0, live = null, retry = 0;
+let chatId = null, token = "", es = null, busy = false, spinI = 0, live = null, retry = 0;
 
 function line(text, cls) {
   const d = document.createElement("div"); d.className = "line " + (cls || ""); d.textContent = text;
@@ -26,7 +26,8 @@ async function highlight(x, y) {
 function onEvent(ev) {
   const m = JSON.parse(ev.data);
   switch (m.type) {
-    case "hello": retry = 0; $("conn").textContent = "[connected]"; setBusy(m.busy); refreshStatus(); break;
+    case "hello": retry = 0; $("conn").textContent = "[connected]"; setBusy(m.busy); refreshStatus(); loadChat(true); break;
+    case "chats": if (m.what === "current" || m.what === "list") loadChat(m.what === "current"); else loadChat(false); break;
     case "status": setBusy(m.state !== "ready", m.state === "ready" ? "READY" : m.state); if (m.state === "ready") live = null; break;
     case "token": if (!live) live = line("", "bot"); live.textContent += m.text; $("log").scrollTop = 1e9; break;
     case "chat": if (live) { live.textContent = m.text; live = null; } else line(m.text, "bot"); break;
@@ -65,8 +66,10 @@ $("stop").onclick = () => post("/stop");
 $("take").onclick = () => post("/takeover");
 $("f").onsubmit = async (e) => {
   e.preventDefault(); const text = $("msg").value.trim(); if (!text) return;
-  $("msg").value = ""; line(text, "user");
-  try { const r = await post("/chat", {text}); if (!r.accepted) line("busy - press STOP first, or wait.", "warn"); }
+  $("msg").value = "";
+  if (/^\/new(chat)?$/i.test(text)) { $("newchat").click(); return; }
+  line(text, "user");
+  try { const r = await post("/chat", {text, chat_id: chatId}); if (!r.accepted) line("busy - press STOP first, or wait.", "warn"); }
   catch (err) { line("can't reach Liscia Agent: " + err.message, "err"); }
 };
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && busy) post("/stop"); });
@@ -83,3 +86,20 @@ async function refreshStatus() {
   } catch (e) {}
 }
 setInterval(() => { if (token && es && es.readyState === 1) refreshStatus(); }, 10000);
+
+async function loadChat(render) {
+  try {
+    const r = await fetch(`${BASE}/chats`, {headers: {"X-PCA-Token": token}}); if (!r.ok) return;
+    const info = await r.json(), cur = info.current, changed = cur.id !== chatId;
+    chatId = cur.id; $("chattitle").textContent = "chat: " + cur.title;
+    if ((render || changed) && !busy) {
+      $("log").innerHTML = "";
+      for (const m of cur.messages) line(m.content, m.role === "user" ? "user" : m.role === "assistant" ? "bot" : "dim");
+      if (!cur.messages.length) line("New chat. Ask me something or tell me what to do.", "dim");
+    }
+  } catch (e) {}
+}
+$("newchat").onclick = async () => {
+  try { const r = await post("/chats/new"); if (r.error) line("busy - press STOP first, or wait.", "warn"); else loadChat(true); }
+  catch (e) { line("can't reach Liscia Agent: " + e.message, "err"); }
+};
