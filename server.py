@@ -132,6 +132,9 @@ class Bridge:
                 self.hub.emit("result", text=res)
         except Exception as e:
             self.hub.emit("error", text=f"{type(e).__name__}: {e}")
+            try:
+                if cid: self.store.add(cid, "system", f"error: {e}")
+            except Exception: pass
         finally:
             self.busy = False; self.hub.emit("status", state="ready")
 

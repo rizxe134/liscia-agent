@@ -2,6 +2,19 @@
 Keeps models warm (keep_alive), caps output length (num_predict) and supports streaming."""
 import base64, io, json, requests
 
+class OllamaError(RuntimeError): pass
+
+def raise_ollama(r, model):
+    """Readable Ollama errors ('out of memory', 'model not found') instead of a bare HTTP 500."""
+    try: msg = r.json().get("error") or r.text
+    except Exception: msg = r.text
+    msg = str(msg)
+    if "out-of-memory" in msg or "out of memory" in msg or "failed to allocate" in msg:
+        raise OllamaError(f"Ollama ran out of memory loading {model}. Close other heavy apps, or pick a smaller local model in Settings.")
+    if r.status_code == 404 or "not found" in msg:
+        raise OllamaError(f"the local model {model} isn't installed. Pull it in Settings (or `ollama pull {model}`).")
+    raise OllamaError(f"Ollama error {r.status_code} for {model}: {msg[:200]}")
+
 class OllamaClient:
     def __init__(self, host, model, fallback_model="", temperature=0.1, timeout_s=180,
                  text_model="", keep_alive="30m", num_predict=200, num_ctx=None):
@@ -18,7 +31,7 @@ class OllamaClient:
             r = requests.post(f"{self.host}/api/chat", json=payload, timeout=self.timeout)
             if r.status_code == 400 and "think" in r.text:  # model without thinking support
                 payload.pop("think"); r = requests.post(f"{self.host}/api/chat", json=payload, timeout=self.timeout)
-            r.raise_for_status()
+            if r.status_code >= 400: raise_ollama(r, payload.get("model"))
             return r.json()["message"]["content"]
         payload["stream"] = True
         out = []
@@ -26,7 +39,7 @@ class OllamaClient:
             if r.status_code == 400:
                 payload.pop("think", None); payload["stream"] = False
                 return self._post(payload)
-            r.raise_for_status()
+            if r.status_code >= 400: raise_ollama(r, payload.get("model"))
             for line in r.iter_lines():
                 if not line: continue
                 chunk = json.loads(line)
