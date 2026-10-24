@@ -35,7 +35,7 @@ def rank(query, results):
         pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)
         import unicodedata
         var = VARIANT.findall(unicodedata.normalize("NFKC", title))
-        if var and not VARIANT.search(query): pen += 0.08  # the original beats "(slowed)" / "sped up" / nightcore edits  # the plain track beats "Little cute video ... #tags"
+        if var and not VARIANT.search(query): pen += 0.12  # the original beats "(slowed)" / "sped up" / nightcore edits  # the plain track beats "Little cute video ... #tags"
         out.append((round(s - pen - i * 0.002, 4), s, dict(r, kind=kind)))
     out.sort(key=lambda x: x[0], reverse=True)
     return out
