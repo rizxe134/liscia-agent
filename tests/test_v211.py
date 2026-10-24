@@ -125,4 +125,32 @@ class OldExtensionTitles(unittest.TestCase):
         got = media.results(L)
         self.assertEqual([g["title"][:16] for g in got], ["Shirobon - Pursu", "ISQ - PURSUIT (V"]); self.assertEqual(got[0]["channel"], "ShirobonMusic")
 
+class AutoSkipAds(unittest.TestCase):
+    def test_new_extension_waits_out_ad(self):
+        import ads
+        L = mock.Mock(); states = iter([{"ad": True, "skipped": 0}, {"ad": True, "skipped": 1}, {"ad": False, "skipped": 1}])
+        L.call.side_effect = lambda cmd, **a: {"on": True} if cmd == "ad_watch" else next(states)
+        r = ads.handle(L, {}, None, lambda m: None, lambda s: None)
+        self.assertEqual((r["ad"], r["skipped"], r["via"]), (True, 1, "extension"))
+        self.assertEqual(L.call.call_args_list[0].kwargs.get("mute"), True)
+    def test_old_extension_clicks_skip_from_snapshot(self):
+        import ads, extlink
+        L = mock.Mock(); snaps = iter([{"elements": [{"id": "7", "label": "Skip"}, {"id": "8", "label": "Ad · 0:12"}]}, {"elements": [{"id": "1", "label": "Like"}]}])
+        clicks = []
+        def call(cmd, **a):
+            if cmd == "ad_watch": raise extlink.ExtError("unknown command ad_watch")
+            if cmd == "click": clicks.append(a["id"]); return {}
+            return next(snaps)
+        L.call.side_effect = call
+        r = ads.handle(L, {}, None, lambda m: None, lambda s: None)
+        self.assertEqual(clicks, ["7"]); self.assertEqual((r["skipped"], r["via"]), (1, "snapshot"))
+    def test_setting_off(self):
+        import ads
+        L = mock.Mock(); r = ads.handle(L, {"media": {"auto_skip_ads": False}}, None)
+        L.call.assert_not_called(); self.assertEqual(r["via"], "off")
+    def test_variants_rank_below_original(self):
+        r = media.rank("pursuit", [{"title": "pursuit (slowed) 1 minute", "href": "https://www.youtube.com/watch?v=s"},
+                                   {"title": "Shirobon - Pursuit", "href": "https://www.youtube.com/watch?v=a"}])
+        self.assertEqual(r[0][2]["href"], "https://www.youtube.com/watch?v=a")
+
 if __name__ == "__main__": unittest.main()

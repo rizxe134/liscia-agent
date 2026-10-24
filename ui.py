@@ -159,6 +159,12 @@ class SettingsWindow:
         self.fb = tk.BooleanVar(value=self.cfg["provider"].get("fallback_local", True))
         tk.Checkbutton(w, text="If the cloud provider fails, fall back to the local Ollama model", variable=self.fb, fg=FG, bg=BG, selectcolor=BG,
                        activebackground=BG, activeforeground=FG, font=FONT, highlightthickness=0).pack(fill="x", padx=12, pady=(8, 0))
+        md = self.cfg.setdefault("media", {})
+        self.skip_ads = tk.BooleanVar(value=md.get("auto_skip_ads", True)); self.mute_ads = tk.BooleanVar(value=md.get("mute_ads", True))
+        for txt, var in (("Auto-skip ads (click 'Skip', close ad banners) while playing videos", self.skip_ads),
+                         ("Mute ads that can't be skipped, unmute after", self.mute_ads)):
+            tk.Checkbutton(w, text=txt, variable=var, fg=FG, bg=BG, selectcolor=BG, activebackground=BG, activeforeground=FG,
+                           font=FONT, highlightthickness=0).pack(fill="x", padx=12, pady=(4, 0))
         self.msg = L("", fg=DIM, wraplength=640); self.msg.pack(fill="x", padx=12, pady=4)
         bar = tk.Frame(w, bg=BG); bar.pack(side="bottom", pady=10)
         btn(bar, "[ SAVE ]", self.save).pack(side="left", padx=6); btn(bar, "[ CLOSE ]", top.destroy).pack(side="left", padx=6)
@@ -284,6 +290,7 @@ class SettingsWindow:
         try:
             settings.apply(self.cfg, {"provider": self.prov.get(), "text_model": self.tm.get().strip(), "vision_model": self.vm.get().strip(),
                                       "fallback_local": self.fb.get()})
+            self.cfg.setdefault("media", {}).update(auto_skip_ads=bool(self.skip_ads.get()), mute_ads=bool(self.mute_ads.get()))
             settings.save(self.cfg)
         except Exception as e:
             self.msg.config(text=f"couldn't save: {e}", fg=WARN); return

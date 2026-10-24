@@ -9,6 +9,7 @@ OK = 0.5      # half the tokens (e.g. the title without the artist): "closest ma
 
 _CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
 
+VARIANT = re.compile(r"\b(slowed|sped ?up|reverb|nightcore|8d|bass ?boosted|1 hour|loop|edit|remix|cover|karaoke|instrumental)\b|\U0001d5fd", re.I)
 JUNK = re.compile(r"^(true|false|now playing|mix|\d+ videos|play all|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
 
 def vid(href):
@@ -31,7 +32,9 @@ def rank(query, results):
                                  "short" if "/shorts/" in h else "video")
         pen = {"mix": 0.35, "playlist": 0.3, "short": 0.15}.get(kind, 0.0)
         extra = max(0, len(re.findall(r"[\w']+", re.sub(r"\d+ (?:hours?|minutes?|seconds?)", "", title))) - len(intents.query_tokens(query)) - 2)
-        pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)  # the plain track beats "Little cute video ... #tags"
+        pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)
+        var = VARIANT.findall(title)
+        if var and not VARIANT.search(query): pen += 0.08  # the original beats "(slowed)" / "sped up" / nightcore edits  # the plain track beats "Little cute video ... #tags"
         out.append((round(s - pen - i * 0.002, 4), s, dict(r, kind=kind)))
     out.sort(key=lambda x: x[0], reverse=True)
     return out
@@ -124,13 +127,20 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         if len(more) <= len(res) and not [x for x in more if x not in res]: continue
         res = [r for r in more if vid(r.get("href")) not in excl and not JUNK.match((r.get("title") or "").strip())] or more; ranked = rank(q, res)
     logf.write(json.dumps({"media_candidates": [{"score": s, "title": r.get("title"), "kind": r.get("kind")} for s, _, r in ranked[:6]]}) + "\n")
-    tried, best_played = [], None
+    tried, best_played = [], None; skipped_ads = [0]
+    adnote = lambda: f" (skipped {skipped_ads[0]} ad{'s' if skipped_ads[0] > 1 else ''})" if skipped_ads[0] else ""
     for score, match, r in ranked[:max_tries]:
         if tried and match < OK: break  # don't wander off into unrelated videos
         tried.append(r.get("title"))
         agent.log(f"[media] trying \"{(r.get('title') or '')[:70]}\" (match {match:.0%}, {r.get('kind')})")
         if r.get("href"): nav(clean(r["href"]) if r.get("kind") == "video" else r["href"])
         else: link.call("click", timeout=25, id=r["id"])
+        try:  # ads: skip as soon as possible / wait out unskippable ones before judging the video
+            import ads
+            ad = ads.handle(link, getattr(agent, "cfg", None) if isinstance(getattr(agent, "cfg", None), dict) else {}, logf, agent.log, sleep)
+            if ad.get("skipped"): skipped_ads[0] += ad["skipped"]
+        except extlink.ExtError as e:
+            if "not connected" in str(e): raise
         st = {}
         for _ in range(10):
             sleep(1.0)
@@ -146,7 +156,7 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         logf.write(json.dumps({"media_verify": {"title": st.get("title"), "channel": st.get("channel"), "match": got, "paused": st.get("paused")}}) + "\n")
         if got >= GOOD:
             agent.last_played = {"url": st.get("url") or r.get("href"), "title": st.get("title")}
-            return f"Playing \"{st.get('title')}\"" + (f" by {st['channel']}" if st.get("channel") else "") + " on YouTube."
+            return f"Playing \"{st.get('title')}\"" + (f" by {st['channel']}" if st.get("channel") else "") + " on YouTube." + adnote()
         if best_played is None or got > best_played[0]: best_played = (got, st.get("title"), st.get("url") or r.get("href"))
     if best_played and best_played[0] >= OK:
         if tried and best_played[1] != st.get("title") and best_played[2]: nav(best_played[2]); sleep(1.0)

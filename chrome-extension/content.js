@@ -243,13 +243,45 @@ L.media_state = async () => {
   const v = document.querySelector("video");
   const t = (document.querySelector("h1.ytd-watch-metadata yt-formatted-string, #title h1, h1.title") || {}).innerText || document.title.replace(/ - YouTube$/, "");
   const ch = (document.querySelector("ytd-watch-metadata ytd-channel-name a, #owner #channel-name a") || {}).innerText || "";
-  return {url: location.href, title: (t || "").trim(), channel: ch.trim(), has_video: !!v, paused: v ? v.paused : null, time: v ? v.currentTime : null};
+  return {url: location.href, title: (t || "").trim(), channel: ch.trim(), has_video: !!v, paused: v ? v.paused : null, time: v ? v.currentTime : null,
+          ad: adShowing(), skippable: !!skipButton()};
 };
 L.media_control = async (args) => {
   const v = document.querySelector("video"); if (!v) throw new Error("no video on this page");
   if (args.op === "pause") v.pause(); else if (args.op === "play") await v.play().catch(() => {});
   return {paused: v.paused};
 };
+
+// 2.1.1: auto ad-skip. Click "Skip"/"Skip Ad" as soon as it shows, close overlay/banner ads, mute unskippable ads (optional).
+const SKIP_SEL = ".ytp-skip-ad-button,.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-ad-skip-button-slot button,.ytp-ad-skip-button-container button," +
+                 "button[id^='skip-button'],.videoAdUiSkipButton";
+const CLOSE_SEL = ".ytp-ad-overlay-close-button,.ytp-ad-overlay-close-container button,ytd-banner-promo-renderer #dismiss-button button," +
+                  "ytd-statement-banner-renderer #dismiss-button button,.ytp-featured-product-close-button";
+function adShowing() { const p = document.querySelector("#movie_player,.html5-video-player"); return !!(p && (p.classList.contains("ad-showing") || p.classList.contains("ad-interrupting"))); }
+function visible(e) { if (!e) return false; const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(e).visibility !== "hidden"; }
+function skipButton() {
+  const b = [...document.querySelectorAll(SKIP_SEL)].find(visible);
+  if (b) return b;
+  return [...document.querySelectorAll(".html5-video-player button")].find(x => visible(x) && /^\s*skip(\s+ads?)?\s*$/i.test(x.innerText || x.getAttribute("aria-label") || ""));
+}
+const AD = {on: false, mute: true, skipped: 0, closed: 0, muted_by_us: false, timer: null};
+function adTick() {
+  const v = document.querySelector("video"), b = skipButton();
+  if (b) { b.click(); AD.skipped++; }
+  for (const c of document.querySelectorAll(CLOSE_SEL)) if (visible(c)) { c.click(); AD.closed++; }
+  const ad = adShowing();
+  if (v && AD.mute && ad && !v.muted) { v.muted = true; AD.muted_by_us = true; }
+  if (v && !ad && AD.muted_by_us) { v.muted = false; AD.muted_by_us = false; }
+}
+L.ad_watch = async (args = {}) => {
+  AD.mute = args.mute !== false;
+  if (args.on === false) { AD.on = false; clearInterval(AD.timer); AD.timer = null; adTick(); return {on: false, skipped: AD.skipped}; }
+  if (!AD.timer) AD.timer = setInterval(adTick, 400);
+  AD.on = true; adTick();
+  return {on: true, ad: adShowing(), skipped: AD.skipped, closed: AD.closed};
+};
+L.ad_state = async () => ({ad: adShowing(), skippable: !!skipButton(), skipped: AD.skipped, closed: AD.closed, watching: AD.on,
+                           muted_by_us: AD.muted_by_us, url: location.href});
 
 // page-change events -> service worker -> agent
 let lastUrl = location.href, timer = null;

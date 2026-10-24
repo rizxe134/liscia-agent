@@ -119,6 +119,8 @@ async function run(cmd, a) {
     case "first_video": return await inPage(tab.id, "first_video", []);
     case "video_results": return await inPage(tab.id, "video_results", [a]);
     case "media_state": return await inPage(tab.id, "media_state", [a]);
+    case "ad_watch": return await inPage(tab.id, "ad_watch", [a]);
+    case "ad_state": return await inPage(tab.id, "ad_state", [a]);
     case "media_control": return await inPage(tab.id, "media_control", [a]);
   }
   throw new Error("unknown command " + cmd);

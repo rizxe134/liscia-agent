@@ -108,6 +108,8 @@ class FakeLink:
         if cmd == "media_control": return {"paused": False}
         if cmd == "scroll": return {"moved": 0}
         if cmd == "snapshot": return {"url": self.url, "title": self.titles.get(self.url, "YouTube"), "elements": []}
+        if cmd in ("ad_watch", "ad_state"):  # like a pre-2.1.1 extension
+            import extlink; raise extlink.ExtError(f"unknown command {cmd}")
         raise AssertionError(cmd)
 
 def agent():
