@@ -67,6 +67,18 @@ class Ranking(unittest.TestCase):
            {"id": "4", "title": "Ptasinski - Frog (1 hour loop)", "kind": "video", "href": "https://www.youtube.com/watch?v=l"}]
     def test_title_and_artist_win_over_mix_and_loops(self):
         self.assertEqual(media.rank("frog by ptasinski", self.RES)[0][2]["id"], "3")
+    def test_live_case_plain_track_beats_tagged_clip(self):
+        res = [{"title": "Little cute video. Frog: Song by RJ Pasin and ptasinski #jada4ev #rjpasin #ptasinski 1 minute, 33 seconds", "href": "https://www.youtube.com/watch?v=c&list=RDc&start_radio=1"},
+               {"title": "Frog Rj Pasin", "href": "https://www.youtube.com/watch?v=r&list=PL"},
+               {"title": "frog 1 minute, 31 seconds", "channel": "ptasinski", "href": "https://www.youtube.com/watch?v=p&list=RDp&start_radio=1"}]
+        self.assertEqual(media.rank("frog by ptasinski", res)[0][2]["href"], "https://www.youtube.com/watch?v=p&list=RDp&start_radio=1")
+    def test_snapshot_fallback_reads_channel(self):
+        link = mock.Mock()
+        def call(cmd, **a):
+            if cmd == "video_results": raise __import__("extlink").ExtError("unknown command video_results")
+            return {"elements": [{"id": "1", "label": "frog", "href": "https://www.youtube.com/watch?v=p"}, {"id": "2", "label": "ptasinski", "href": "https://www.youtube.com/@ptasinski"}]}
+        link.call.side_effect = call
+        self.assertEqual(media.results(link)[0]["channel"], "ptasinski")
     def test_title_match_fuzzy(self):
         self.assertEqual(intents.title_match("frog by ptasinski", "Ptasiński – Frog"), 1.0)
         self.assertEqual(intents.title_match("frog by ptasinski", "Funny Song #9: The Name of my Frog"), 0.5)
@@ -152,6 +164,6 @@ class EndToEnd(unittest.TestCase):
                 a.chat_ctx = st.context(cid); st.add(cid, "user", text)
                 r = a.run(text); out.append(r); st.add(cid, "assistant", r, meta=a.last_task_meta)
         self.assertIn("search_query=Frog", [a["url"] for c, a in link.calls if c == "navigate"][0])
-        self.assertIn("Frog", out[1])  # "the song" = the previous query, searched and verified
+        self.assertIn('Searched YouTube for "Frog"', out[0]); self.assertIn("frog", out[1].lower())  # "the song" = the previous query, searched and verified
         self.assertIn('Playing "frog" by Ptasinski', out[2]); self.assertEqual(link.url, "https://www.youtube.com/watch?v=p")
         client.chat.assert_not_called()

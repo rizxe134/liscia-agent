@@ -355,6 +355,10 @@ class Agent:
                     self.log(f"[web] first video -> {(res.get('clicked') or '')[:60]}")
             logf.write(json.dumps({"web_fast": act}) + "\n"); done.append(f"{act['action']} {act.get('url','')}".strip() + " (done)")
         if fixed and not rest:
+            if all(a["action"] == "open_url" for a in fixed) and "youtube.com/results" in fixed[-1].get("url", ""):
+                import urllib.parse
+                q = urllib.parse.parse_qs(urllib.parse.urlparse(fixed[-1]["url"]).query).get("search_query", [""])[0]
+                return f"Searched YouTube for \"{q}\". Say \"play it\" and I'll play the best match."
             return "done: " + "; ".join(done)
         history += [f"(already done) {d}" for d in done]
         return webagent.run_web(self, rest or task, history, logf, link=link, max_steps=self.cfg["agent"].get("max_steps", 40))

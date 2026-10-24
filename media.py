@@ -1,7 +1,7 @@
 """2.0.1: play a specific song/video on YouTube and PROVE it. Always searches (never presses play on whatever page is open,
 unless the current video already matches), ranks every result by the query's significant tokens (title + artist),
 prefers plain videos over Mix/radio/playlists, verifies the playing title, tries up to 3 candidates, and reports honestly."""
-import json, time, urllib.parse
+import json, re, time, urllib.parse
 import intents, extlink
 
 GOOD = 0.99   # every significant token matched
@@ -17,6 +17,8 @@ def rank(query, results):
                                  "playlist" if "list=" in (r.get("href") or "") else "video")
         pen = {"mix": 0.35, "playlist": 0.3, "short": 0.15}.get(kind, 0.0)
         if kind == "video" and intents.MIX_RE.search(title) and not intents.MIX_RE.search(query): pen += 0.2
+        extra = max(0, len(re.findall(r"[\w']+", re.sub(r"\d+ (?:hours?|minutes?|seconds?)", "", title))) - len(intents.query_tokens(query)) - 2)
+        pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)  # the plain track beats "Little cute video ... #tags"
         out.append((round(s - pen - i * 0.002, 4), s, dict(r, kind=kind)))
     out.sort(key=lambda x: x[0], reverse=True)
     return out
@@ -30,10 +32,13 @@ def results(link):
     if True:
         snap = link.call("snapshot")  # older extension: fall back to the page's /watch links
         res, seen = [], set()
-        for e in snap.get("elements") or []:
+        els = snap.get("elements") or []
+        for i, e in enumerate(els):
             h = e.get("href") or ""
             if "/watch" in h and h not in seen and len(e.get("label") or "") > 3:
-                seen.add(h); res.append({"id": e["id"], "title": e["label"], "href": h})
+                seen.add(h)
+                ch = next((x.get("label") for x in els[i + 1:i + 6] if re.search(r"youtube\.com/(@|channel/|c/|user/)", x.get("href") or "")), "")
+                res.append({"id": e["id"], "title": e["label"], "href": h, "channel": ch or ""})
         return res
 
 def state(link):
@@ -58,7 +63,7 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
                 try: link.call("media_control", timeout=10, op="play")
                 except extlink.ExtError: pass
             logf.write(json.dumps({"media": "already_playing", "title": cur.get("title")}) + "\n")
-            return f"Playing \"{cur.get('title')}\" on YouTube (it was already open)."
+            return f"Playing \"{cur.get('title')}\"" + (f" by {cur['channel']}" if cur.get("channel") else "") + " on YouTube (it was already open)."
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
     url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(q)

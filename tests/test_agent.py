@@ -663,7 +663,7 @@ class V121WebRouting(ExtensionChannel):
         a = self._agent(client)
         with mock.patch.object(extlink, "LINK", self.link):
             res = a.run("open youtube in chrome and search lofi music")
-        self.assertTrue(res.startswith("done"), res)
+        self.assertTrue(res.startswith('Searched YouTube for "lofi music"'), res)
         self.assertEqual(self.ext.url, "https://www.youtube.com/results?search_query=lofi+music")
         client.chat.assert_not_called(); client.text_chat.assert_not_called(); self.assertEqual(self.execs, [])
     def test_search_youtube_for(self):
@@ -671,7 +671,7 @@ class V121WebRouting(ExtensionChannel):
         client = mock.MagicMock(); a = self._agent(client)
         with mock.patch.object(extlink, "LINK", self.link):
             res = a.run("search youtube for lofi music")
-        self.assertTrue(res.startswith("done"), res); self.assertIn("results?search_query=lofi+music", self.ext.url)
+        self.assertTrue(res.startswith('Searched YouTube for "lofi music"'), res); self.assertIn("results?search_query=lofi+music", self.ext.url)
         client.chat.assert_not_called()
     def test_free_form_web_task_uses_webagent_not_vision(self):
         import extlink
