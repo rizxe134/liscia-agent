@@ -65,9 +65,7 @@ def retro_confirm(root, msg):
     def done(v): res["ok"] = v; win.destroy()
     bar = tk.Frame(win, bg=BG); bar.pack(pady=10)
     for txt, v in (("[ Y ] ALLOW", True), ("[ N ] DENY", False)):
-        tk.Button(bar, text=txt, command=lambda v=v: done(v), fg=FG, bg=BG, activebackground=FG,
-                  activeforeground=BG, font=FONT, relief="flat", highlightbackground=FG,
-                  highlightthickness=1).pack(side="left", padx=8)
+        FlatButton(bar, text=txt, command=lambda v=v: done(v), highlightbackground=FG).pack(side="left", padx=8)
     win.bind("y", lambda e: done(True)); win.bind("n", lambda e: done(False)); win.bind("<Escape>", lambda e: done(False))
     win.grab_set(); win.focus_force(); root.wait_window(win)
     return res["ok"]
@@ -79,9 +77,21 @@ def style_tabs(st):
     st.configure("R.TNotebook.Tab", background=BG, foreground=DIM, font=FONT, padding=(10, 4), bordercolor=LINE)
     st.map("R.TNotebook.Tab", background=[("selected", FG)], foreground=[("selected", BG)])
 
+class FlatButton(tk.Label):
+    """A themable button (macOS's native tk.Button ignores colours and draws white). Same API: command=, state=."""
+    def __init__(self, parent, text="", command=None, fg=None, bg=None, font=None, state="normal", activebackground=None,
+                 activeforeground=None, highlightbackground=None, highlightthickness=1, **_):
+        super().__init__(parent, text=text, fg=fg or FG, bg=bg or BG, font=font or FONT, cursor="hand2", padx=8, pady=3,
+                         highlightbackground=highlightbackground or LINE, highlightthickness=highlightthickness, disabledforeground=LINE, state=state)
+        self._cmd = command
+        self.bind("<Button-1>", lambda e: self._cmd() if self._cmd and str(self.cget("state")) != "disabled" else None)
+        self.bind("<Enter>", lambda e: str(self.cget("state")) != "disabled" and self.configure(highlightbackground=self.cget("fg")))
+        self.bind("<Leave>", lambda e: self.configure(highlightbackground=LINE))
+    def invoke(self):
+        if self._cmd: self._cmd()
+
 def btn(parent, text, cmd, fg=None):
-    return tk.Button(parent, text=text, command=cmd, fg=fg or FG, bg=BG, font=FONT, relief="flat", activebackground=fg or FG,
-                     activeforeground=BG, highlightbackground=LINE, highlightthickness=1, cursor="hand2")
+    return FlatButton(parent, text=text, command=cmd, fg=fg)
 
 def retro_prompt(root, title, initial=""):
     win = tk.Toplevel(root, bg=BG, highlightbackground=FG, highlightthickness=2); win.title(title); win.transient(root)
@@ -308,8 +318,7 @@ class ChatApp:
         main = tk.Frame(r, bg=BG); main.pack(side="left", fill="both", expand=True)
         top = tk.Frame(main, bg=BG); top.pack(fill="x", padx=8, pady=(6, 0))
         self.title_lbl = tk.Label(top, text="> LISCIA AGENT", fg=FG, bg=BG, font=FONT + ("bold",)); self.title_lbl.pack(side="left")
-        self.stop_btn = tk.Button(top, text="[ STOP ]", command=self.stop, fg=WARN, bg=BG, font=FONT,
-                                  relief="flat", activebackground=WARN, activeforeground=BG, state="disabled")
+        self.stop_btn = FlatButton(top, text="[ STOP ]", command=self.stop, fg=WARN, state="disabled")
         self.stop_btn.pack(side="right")
         btn(top, "[ \u2699 SETTINGS ]", self.open_settings).pack(side="right", padx=6)
         self.model_lbl = tk.Label(main, text="", fg=DIM, bg=BG, font=FONT, anchor="w"); self.model_lbl.pack(fill="x", padx=8)
