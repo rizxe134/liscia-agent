@@ -53,7 +53,7 @@ L.snapshot = (opts = {}) => {
   const max = opts.max || 110, below = opts.below != null ? opts.below : 3, out = [], seen = new Set();
   const onScreen = [], offScreen = [];
   for (const e of document.querySelectorAll(SEL)) {
-    if (e.closest("[aria-hidden=true]") || !visible(e, below)) continue;
+    if (e.closest("[aria-hidden=true]") || e.closest("#" + HOST_ID) || !visible(e, below)) continue;
     (e.getBoundingClientRect().top > innerHeight ? offScreen : onScreen).push(e);
   }
   // YouTube: video titles are the most important off-screen elements
@@ -95,13 +95,69 @@ function flash(e) {
   setTimeout(() => { s.opacity = "0"; setTimeout(() => b.remove(), 450); }, 1200);
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 2.2.0: visible agent cursor + "agent is using this tab" banner. Closed shadow DOM on <html> (not <body>), pointer-events:none
+// except the Stop button, so page styles can't touch it and snapshots / find / elementFromPoint never see it.
+const VIZ = {on: false, cursor: true, banner: true, host: null, root: null, x: innerWidth / 2, y: innerHeight / 2};
+const HOST_ID = "liscia-agent-overlay-host";
+function vizHost() {
+  if (VIZ.host && VIZ.host.isConnected) return VIZ.root;
+  const h = document.createElement("liscia-agent-overlay"); h.id = HOST_ID; h.setAttribute("aria-hidden", "true");
+  h.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;display:block";
+  const r = h.attachShadow({mode: "closed"});
+  r.innerHTML = `<style>
+    :host{all:initial}
+    #cur{position:fixed;left:0;top:0;width:26px;height:26px;transform:translate(-100px,-100px);transition:transform .45s cubic-bezier(.22,.8,.3,1);
+         filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));display:none}
+    #lab{position:fixed;left:0;top:0;transform:translate(-200px,-200px);transition:transform .45s cubic-bezier(.22,.8,.3,1);font:600 12px/1.2 -apple-system,Segoe UI,sans-serif;
+         background:#111;color:#3dff8f;padding:3px 7px;border-radius:6px;border:1px solid #3dff8f;white-space:nowrap;display:none}
+    #box{position:fixed;border:2px solid #3dff8f;border-radius:6px;box-shadow:0 0 0 4px rgba(61,255,143,.25);display:none;transition:all .25s}
+    .rip{position:fixed;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;border:3px solid #3dff8f;animation:rip .6s ease-out forwards}
+    @keyframes rip{to{transform:scale(3.4);opacity:0}}
+    #ban{position:fixed;top:6px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:10px;background:rgba(17,17,17,.92);color:#fff;
+         font:600 12px/1 -apple-system,Segoe UI,sans-serif;padding:6px 8px 6px 12px;border-radius:999px;border:1px solid #3dff8f;box-shadow:0 2px 10px rgba(0,0,0,.35);transition:opacity .2s}
+    #ban .dot{color:#3dff8f;animation:pulse 1.2s infinite}@keyframes pulse{50%{opacity:.3}}
+    #stop{pointer-events:auto;cursor:pointer;background:#ff4d5e;color:#fff;border:0;border-radius:999px;padding:4px 10px;font:700 11px -apple-system,Segoe UI,sans-serif}
+  </style>
+  <div id="box"></div><svg id="cur" viewBox="0 0 24 24"><path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#3dff8f" stroke="#0b0b0b" stroke-width="1.6" stroke-linejoin="round"/></svg>
+  <div id="lab"></div><div id="ban"><span class="dot">●</span><span>Liscia Agent is using this tab</span><button id="stop">Stop</button></div>`;
+  r.getElementById("stop").addEventListener("click", (ev) => { ev.stopPropagation(); try { chrome.runtime.sendMessage({type: "agent_stop"}); } catch (e) {} vizOff(); });
+  document.documentElement.appendChild(h); VIZ.host = h; VIZ.root = r; return r;
+}
+function vizOff() { VIZ.on = false; if (VIZ.host) VIZ.host.remove(); VIZ.host = VIZ.root = null; }
+L.viz = async (o = {}) => {
+  if (o.on === false) { vizOff(); return {on: false}; }
+  VIZ.on = true; VIZ.cursor = o.cursor !== false; VIZ.banner = o.banner !== false;
+  const r = vizHost(); r.getElementById("ban").style.display = VIZ.banner ? "flex" : "none";
+  return {on: true};
+};
+function isOverlay(n) { return !!n && (n === VIZ.host || (n.id === HOST_ID)); }
+async function cursorTo(e, text) {
+  if (!VIZ.on || !VIZ.cursor || !e) return;
+  const r = vizHost(), rc = e.getBoundingClientRect(), x = rc.left + rc.width / 2, y = rc.top + rc.height / 2;
+  const cur = r.getElementById("cur"), lab = r.getElementById("lab"), box = r.getElementById("box"), ban = r.getElementById("ban");
+  cur.style.display = lab.style.display = "block";
+  Object.assign(box.style, {display: "block", left: rc.left - 3 + "px", top: rc.top - 3 + "px", width: rc.width + 2 + "px", height: rc.height + 2 + "px"});
+  cur.style.transform = `translate(${x - 3}px,${y - 2}px)`; lab.textContent = (text || "").slice(0, 60);
+  lab.style.transform = `translate(${Math.min(x + 18, innerWidth - 220)}px,${y + 18}px)`;
+  const br = ban.getBoundingClientRect();  // never let the banner sit over the target (trusted clicks hit-test the real screen)
+  ban.style.opacity = (rc.top < br.bottom + 4 && rc.right > br.left && rc.left < br.right) ? "0" : "1";
+  VIZ.x = x; VIZ.y = y; await sleep(480);
+}
+function ripple(x, y) {
+  if (!VIZ.on || !VIZ.cursor) return;
+  const r = vizHost(), d = document.createElement("div"); d.className = "rip"; d.style.left = x + "px"; d.style.top = y + "px";
+  r.appendChild(d); setTimeout(() => d.remove(), 700);
+  setTimeout(() => { const b = r.getElementById("box"); if (b) b.style.display = "none"; const ban = r.getElementById("ban"); if (ban) ban.style.opacity = "1"; }, 900);
+}
+
 function center(e) { const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }
 function mouse(e, type, x, y) {
   const o = {bubbles: true, cancelable: true, composed: true, view: window, clientX: x, clientY: y, button: 0, buttons: type.endsWith("down") ? 1 : 0};
   e.dispatchEvent(type.startsWith("pointer") ? new PointerEvent(type, {...o, pointerId: 1, pointerType: "mouse", isPrimary: true}) : new MouseEvent(type, o));
 }
-L.prepare = async (id) => {  // scroll into view + highlight; returns viewport centre for a trusted click fallback
-  const e = find(id); e.scrollIntoView({block: "center", inline: "center"}); await sleep(120); flash(e); await sleep(350);
+L.prepare = async (id, verb) => {  // scroll into view + highlight; returns viewport centre for a trusted click fallback
+  const e = find(id); e.scrollIntoView({block: "center", inline: "center"}); await sleep(120);
+  if (VIZ.on && VIZ.cursor) await cursorTo(e, `${verb || "clicking"} ${label(e).slice(0, 40)}`.trim()); else { flash(e); await sleep(350); }
   const [x, y] = center(e); return {x, y, label: label(e)};
 };
 const CLICKABLE = 'a[href],button,input,select,textarea,label,summary,[role=button],[role=link],[role=tab],[role=menuitem],[role=option],[onclick]';
@@ -116,8 +172,10 @@ function httpStatus() {
 }
 L.click = async (id) => {
   const e = find(id), [x, y] = center(e);
-  const target = document.elementFromPoint(x, y) || e;
+  let target = document.elementFromPoint(x, y) || e;
+  if (isOverlay(target)) target = e;  // our own overlay never counts as "covering" the element
   const hit = (target === e || e.contains(target)) ? target : e;
+  ripple(x, y);
   for (const t of ["pointerover", "mouseover", "pointerdown", "mousedown"]) mouse(hit, t, x, y);
   if (e.focus) e.focus({preventScroll: true});
   for (const t of ["pointerup", "mouseup"]) mouse(hit, t, x, y);
@@ -167,6 +225,9 @@ L.select = async (id, value) => {
 };
 L.hover = async (id) => { const e = find(id), [x, y] = center(e); for (const t of ["pointerover", "pointerenter", "mouseover", "mouseenter", "mousemove"]) mouse(e, t, x, y); return {hovered: label(e)}; };
 L.scroll = async (args = {}) => {
+  if (VIZ.on && VIZ.cursor) { const r = vizHost(), lab = r.getElementById("lab"), cur = r.getElementById("cur");
+    cur.style.display = lab.style.display = "block"; cur.style.transform = `translate(${innerWidth - 60}px,${innerHeight / 2}px)`;
+    lab.textContent = "scrolling " + (args.direction || "down"); lab.style.transform = `translate(${innerWidth - 200}px,${innerHeight / 2 + 22}px)`; }
   if (args.id) { find(args.id).scrollIntoView({block: "center"}); return {scrolled: "to element"}; }
   const h0 = document.documentElement.scrollHeight, y0 = scrollY;
   const dy = args.amount != null ? Number(args.amount) : (args.direction === "up" ? -0.8 : 0.8) * innerHeight;

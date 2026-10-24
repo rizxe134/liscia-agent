@@ -2,9 +2,9 @@
 import sys
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 MAC, WIN = sys.platform == "darwin", sys.platform.startswith("win")
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 
-hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "planner", "policy", "appindex", "appui", "winbind", "adapters", "commands", "appfirst", "chats", "settings", "keystore", "providers", "media", "followups", "themes", "creds", "accounts", "ads", "docx", "openpyxl", "pptx", "psutil"]
+hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "planner", "policy", "appindex", "appui", "winbind", "adapters", "commands", "appfirst", "chats", "settings", "keystore", "providers", "media", "followups", "themes", "creds", "accounts", "ads", "overlay", "docx", "openpyxl", "pptx", "psutil"]
 hidden += [m for m in collect_submodules("pynput") if ("_darwin" in m if MAC else "_win32" in m if WIN else "_xorg" in m) or m.count(".") <= 1]
 hidden += collect_submodules("keyring") + (["win32ctypes", "win32ctypes.core"] if WIN else [])
 if MAC: hidden += ["Quartz", "AppKit", "Foundation", "objc"]

@@ -133,10 +133,31 @@ class Agent:
 
     def _executor(self, scale):
         ex = self._mk(scale)
-        if self.on_highlight and hasattr(ex, "on_click") and not isinstance(getattr(type(ex), "on_click", None), property):
-            try: ex.on_click = lambda x, y: (self.on_highlight(x=x, y=y, space="screen_points"), time.sleep(0.35))
+        import overlay
+        hooks = []
+        if self.on_highlight: hooks.append(lambda x, y: self.on_highlight(x=x, y=y, space="screen_points"))
+        if overlay.HOOK and self.cfg.get("ui", {}).get("show_cursor", True): hooks.append(overlay.show)  # 2.2.0: desktop click ring
+        if hooks and hasattr(ex, "on_click") and not isinstance(getattr(type(ex), "on_click", None), property):
+            def on_click(x, y):
+                for h in hooks:
+                    try: h(x, y)
+                    except Exception: pass
+                time.sleep(0.35)
+            try: ex.on_click = on_click
             except Exception: pass
         return ex
+
+    def agent_session(self, on):
+        """2.2.0: cursor + 'agent is using this tab' banner + tab group in Chrome while a task runs (no-op without the extension)."""
+        ui = self.cfg.get("ui", {}) or {}
+        cur, ban = ui.get("show_cursor", True), ui.get("show_banner", True)
+        if on and not (cur or ban): return
+        try:
+            lk = self.link()
+            if not lk.connected(): return
+            lk.call("agent_session", timeout=8, on=bool(on), cursor=cur, banner=ban)
+            self._session_on = bool(on)
+        except Exception: pass
 
     def link(self):
         import extlink
@@ -410,6 +431,17 @@ class Agent:
             self.log(f"(planning skipped: {e})"); return ""
 
     def run(self, task):
+        """Runs a task; the Chrome cursor/banner session always ends, whether the task finishes, fails or is stopped."""
+        global CURRENT
+        CURRENT = self; self._session_on = False
+        if not self._injected_exec: self.agent_session(True)
+        try:
+            return self._run(task)
+        finally:
+            if self._session_on: self.agent_session(False)
+            if CURRENT is self: CURRENT = None
+
+    def _run(self, task):
         a_cfg, s_cfg = self.cfg["agent"], self.cfg["safety"]
         import paths
         run_dir = os.path.join(paths.runs_dir(a_cfg.get("runs_dir", "runs")), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
@@ -914,6 +946,13 @@ CHAT_SYSTEM = ("You are Liscia, a friendly, concise, smart local assistant runni
 ACTION_RE = _re.compile(r"\b(look ?up|search|google|find|open|launch|go to|visit|play|watch|make|create|write|build|generate|prepare|draft|"
                         r"put|save|export|add|list|download|type|click|fill|send|book|order|compile|gather|collect|research)\b", _re.I)
 SMALLTALK_RE = _re.compile(r"^\s*(hi|hello|hey|yo|thanks|thank you|thx|good (morning|night|evening)|how are you|what'?s up|bye|ok|okay|cool|nice|lol)\b", _re.I)
+
+CURRENT = None  # the running Agent (the tab banner's Stop button sets its kill switch)
+
+def stop_current():
+    a = CURRENT
+    if a: a.kill.event.set()
+    return a is not None
 
 def needs_task(message):
     """Code-side chat-vs-task decision (runs before the model): planner rules + action verbs + file words."""

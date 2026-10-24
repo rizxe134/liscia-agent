@@ -74,6 +74,7 @@ async function trustedKey(tabId, key) {
 
 async function run(cmd, a) {
   if (cmd === "ping") return {pong: true, version: VERSION};
+  if (cmd === "reload_extension") { setTimeout(() => chrome.runtime.reload(), 300); return {reloading: true, version: VERSION}; }
   if (cmd === "tabs") return (await chrome.tabs.query({})).map(t => ({id: t.id, index: t.index, title: t.title, url: t.url, active: t.active, windowId: t.windowId}));
   if (cmd === "navigate" || cmd === "new_tab") {
     let url = String(a.url || ""); if (!/^[a-z]+:/i.test(url)) url = "https://" + url;
@@ -97,7 +98,9 @@ async function run(cmd, a) {
   if (cmd === "close_tab") { const t = a.tabId ? {id: a.tabId} : await activeTab(); await chrome.tabs.remove(t.id); return {closed: t.id}; }
   if (cmd === "screenshot") { const t = await activeTab(); return {dataUrl: await chrome.tabs.captureVisibleTab(t.windowId, {format: "jpeg", quality: 60}), url: t.url}; }
 
+  if (cmd === "agent_session") return await session(a);
   const tab = await activeTab();
+  if (!restricted(tab.url)) await vizFor(tab).catch(() => {});
   if (restricted(tab.url)) throw new Error(`can't access ${tab.url || "this tab"} (browser page) - navigate to a website first`);
   switch (cmd) {
     case "snapshot": { const s = await inPage(tab.id, "snapshot", [a]); s.tabId = tab.id; return s; }
@@ -107,11 +110,11 @@ async function run(cmd, a) {
       try { return await inPage(tab.id, "click", [a.id]); }
       catch (e) { await trustedClick(tab.id, p.x, p.y); return {clicked: p.label, trusted: true, note: String(e.message || e)}; }
     }
-    case "type": await inPage(tab.id, "prepare", [a.id]); return await inPage(tab.id, "type", [a.id, String(a.text || ""), {press_enter: !!a.press_enter, clear: a.clear}]);
+    case "type": await inPage(tab.id, "prepare", [a.id, "typing in"]); return await inPage(tab.id, "type", [a.id, String(a.text || ""), {press_enter: !!a.press_enter, clear: a.clear}]);
     case "press": if (a.trusted) { await trustedKey(tab.id, a.key || "Enter"); return {pressed: a.key, trusted: true}; }
                   return await inPage(tab.id, "press", [a.key || "Enter", a.id || null]);
-    case "select": await inPage(tab.id, "prepare", [a.id]); return await inPage(tab.id, "select", [a.id, a.value]);
-    case "hover": await inPage(tab.id, "prepare", [a.id]); return await inPage(tab.id, "hover", [a.id]);
+    case "select": await inPage(tab.id, "prepare", [a.id, "choosing"]); return await inPage(tab.id, "select", [a.id, a.value]);
+    case "hover": await inPage(tab.id, "prepare", [a.id, "pointing at"]); return await inPage(tab.id, "hover", [a.id]);
     case "scroll": return await inPage(tab.id, "scroll", [a]);
     case "find_text": return await inPage(tab.id, "find_text", [a]);
     case "wait_for": return await inPage(tab.id, "wait_for", [a]);
@@ -126,8 +129,43 @@ async function run(cmd, a) {
   throw new Error("unknown command " + cmd);
 }
 
+// 2.2.0: agent session = cursor + banner in the controlled tab, a badge, and a green "Liscia Agent" tab group
+async function getS() { return (await chrome.storage.session.get("lisciaSession")).lisciaSession || null; }
+async function setS(s) { await chrome.storage.session.set({lisciaSession: s}); }
+async function vizFor(tab) {
+  const s = await getS(); if (!s || !s.on) return;
+  if (s.tabId !== tab.id) { await markTab(s, tab); }
+  if (s.cursor || s.banner) await inPage(tab.id, "viz", [{on: true, cursor: s.cursor, banner: s.banner}]);
+}
+async function markTab(s, tab) {
+  s.tabId = tab.id; s.grouped = s.grouped || [];
+  try { await chrome.action.setBadgeBackgroundColor({tabId: tab.id, color: "#1f9d55"}); await chrome.action.setBadgeText({tabId: tab.id, text: "AI"}); } catch (e) {}
+  if (s.group !== false && chrome.tabGroups && tab.groupId === -1) {  // never take over a group the user made
+    try { const g = await chrome.tabs.group({tabIds: [tab.id]}); await chrome.tabGroups.update(g, {title: "Liscia Agent", color: "green"}); s.grouped.push(tab.id); } catch (e) {}
+  }
+  await setS(s);
+}
+async function session(a) {
+  if (a.on) {
+    const tab = await activeTab().catch(() => null);
+    const s = {on: true, cursor: a.cursor !== false, banner: a.banner !== false, group: a.group !== false, tabId: null, grouped: []};
+    await setS(s); if (tab) { await markTab(s, tab); if (!restricted(tab.url)) await inPage(tab.id, "viz", [{on: true, cursor: s.cursor, banner: s.banner}]).catch(() => {}); }
+    return {on: true, tabId: s.tabId};
+  }
+  const s = await getS(); await chrome.storage.session.remove("lisciaSession");
+  if (!s) return {on: false};
+  for (const id of new Set([s.tabId, ...(s.grouped || [])].filter(Boolean))) {
+    try { await chrome.action.setBadgeText({tabId: id, text: ""}); } catch (e) {}
+    try { const t = await chrome.tabs.get(id); if (!restricted(t.url)) await inPage(id, "viz", [{on: false}]); } catch (e) {}
+  }
+  for (const id of s.grouped || []) { try { await chrome.tabs.ungroup(id); } catch (e) {} }
+  return {on: false};
+}
+
 // page events from content scripts -> agent
 chrome.runtime.onMessage.addListener((m, sender) => {
+  if (m && m.type === "agent_stop") { api("/ext/event", {type: "agent_stop", tabId: sender.tab && sender.tab.id}).catch(() => {}); session({on: false}).catch(() => {}); return; }
+  if (m && m.type === "page_event" && m.kind === "loaded" && sender.tab) getS().then(s => { if (s && s.on && s.tabId === sender.tab.id) vizFor(sender.tab).catch(() => {}); });
   if (m && m.type === "page_event" && sender.tab && sender.tab.active) api("/ext/event", {...m, tabId: sender.tab.id}).catch(() => {});
 });
 chrome.tabs.onActivated.addListener(async ({tabId}) => {

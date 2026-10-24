@@ -219,6 +219,8 @@ def make_handler(bridge):
                 return self._send(200, bridge.chats_info())
             if p == "/ext/result": return self._send(200, {"ok": bridge.link.result(data)})
             if p == "/ext/event":
+                if data.get("type") == "agent_stop":  # the Stop button in the tab banner
+                    bridge.stop(); __import__("core").stop_current(); bridge.log("Stop requested from the tab banner.")
                 bridge.link.event(data); return self._send(200, {"ok": True})
             if p == "/stop": bridge.stop(); return self._send(200, {"ok": True})
             if p == "/takeover": bridge.stop(takeover=True); return self._send(200, {"ok": True})

@@ -187,8 +187,22 @@ class SettingsWindow:
         self.size = tk.Scale(w, from_=themes.SIZES[0], to=themes.SIZES[1], orient="horizontal", command=lambda v: self.on_theme(),
                              fg=FG, bg=BG, troughcolor=LINE, highlightthickness=0, font=FONT, length=360, activebackground=FG)
         self.size.set(size); self.size.pack(anchor="w", padx=12)
+        tk.Label(w, text="> WHILE THE AGENT WORKS", fg=FG, bg=BG, font=FONT + ("bold",), anchor="w").pack(fill="x", padx=12, pady=(14, 0))
+        ui_cfg = self.app.cfg.setdefault("ui", {})
+        self.show_cursor = tk.BooleanVar(value=ui_cfg.get("show_cursor", True)); self.show_banner = tk.BooleanVar(value=ui_cfg.get("show_banner", True))
+        for txt, var, key in (("Show agent cursor (glides to what it clicks; ring on desktop clicks)", self.show_cursor, "show_cursor"),
+                              ("Show active-tab banner (\u25cf Liscia Agent is using this tab \u00b7 Stop) + tab group", self.show_banner, "show_banner")):
+            tk.Checkbutton(w, text=txt, variable=var, command=lambda v=var, k=key: self.on_toggle(k, v), fg=FG, bg=BG, selectcolor=BG,
+                           activebackground=BG, activeforeground=FG, font=FONT, highlightthickness=0, anchor="w").pack(fill="x", padx=12)
         self.theme_msg = tk.Label(w, text="Changes apply right away and are saved to config.yaml.", fg=DIM, bg=BG, font=FONT, anchor="w")
         self.theme_msg.pack(fill="x", padx=12, pady=8)
+
+    def on_toggle(self, key, var):
+        self.app.cfg.setdefault("ui", {})[key] = bool(var.get())
+        try:
+            import settings; settings.save(self.app.cfg)
+        except Exception as e:
+            self.theme_msg.config(text=f"couldn't save: {e}", fg=WARN)
 
     def on_theme(self):
         name, size = self.theme.get(), int(self.size.get())
@@ -350,6 +364,8 @@ class ChatApp:
         r.bind("<F12>", lambda e: self.stop()); r.bind("<Command-period>", lambda e: self.stop())
         r.bind("<Control-n>", lambda e: self.new_chat()); r.bind("<Command-n>", lambda e: self.new_chat())
         self.refresh_model_label(); self.refresh_chats(); self.show_chat(self.store.current())
+        import overlay  # 2.2.0: desktop click ring, drawn on the Tk thread
+        overlay.HOOK = lambda x, y: self.q.put(("ring", (x, y)))
         self._tick()
         threading.Thread(target=self._preload, daemon=True).start()
 
@@ -527,6 +543,10 @@ class ChatApp:
                 self.log.config(state="normal"); self.log.insert("end", val, "agent"); self.log.see("end"); self.log.config(state="disabled")
             elif kind == "stream_end":
                 self.log.config(state="normal"); self.log.insert("end", "\n"); self.log.config(state="disabled")
+            elif kind == "ring":
+                try:
+                    import overlay; overlay.ring(self.root, *val)
+                except Exception: pass
             elif kind == "end": self._set_busy(False)
             elif kind == "busy": self._set_busy(True)
             elif kind == "chats_changed":
