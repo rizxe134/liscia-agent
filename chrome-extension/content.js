@@ -225,9 +225,12 @@ L.video_results = async (args) => {
   const rows = document.querySelectorAll("ytd-video-renderer,ytd-radio-renderer,ytd-playlist-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,yt-lockup-view-model,ytd-reel-item-renderer");
   for (const r of rows) {
     if (r.closest("ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-promoted-video-renderer")) continue;
-    const a = r.querySelector("a#video-title,a#video-title-link,a.yt-lockup-metadata-view-model-wiz__title,a[href*='/watch'],a[href*='/shorts/']");
+    // 2.1.1: the TITLE link, not the thumbnail (whose text is "2:05 Now playing")
+    const a = r.querySelector("a#video-title,a#video-title-link,a.yt-lockup-metadata-view-model-wiz__title,a[class*='lockup-metadata'][href],h3 a[href]") ||
+              r.querySelector("a[href*='/watch'],a[href*='/shorts/']");
     if (!a || !a.href || seen.has(a.href)) continue; seen.add(a.href);
-    const title = (a.getAttribute("title") || a.innerText || label(a) || "").replace(/\s+/g, " ").trim();
+    const h = r.querySelector("#video-title,h3,[class*='lockup-metadata'] [role='heading']");
+    const title = (a.getAttribute("title") || (h && h.textContent) || a.getAttribute("aria-label") || a.innerText || "").replace(/\s+/g, " ").trim();
     const ch = r.querySelector("ytd-channel-name a, #channel-name a, .yt-content-metadata-view-model-wiz__metadata-text");
     const tag = r.tagName.toLowerCase();
     const kind = /radio/.test(tag) || /[?&]start_radio=1/.test(a.href) || /^mix\b/i.test(title) ? "mix" : /playlist/.test(tag) || /[?&]list=/.test(a.href) ? "playlist" : /\/shorts\//.test(a.href) || /reel/.test(tag) ? "short" : "video";

@@ -114,4 +114,15 @@ class JunkLabels(unittest.TestCase):
         L.call.side_effect = lambda cmd, **a: {} if cmd == "video_results" else {"elements": els}
         got = media.results(L); self.assertEqual(got[0]["title"], "Shirobon - Pursuit | Just Shapes & Beats")
 
+class OldExtensionTitles(unittest.TestCase):
+    def test_junk_video_results_use_snapshot_titles(self):
+        L = mock.Mock(); h = "https://www.youtube.com/watch?v=a"
+        vr = {"results": [{"id": "1", "title": "2:05 Now playing", "channel": "ShirobonMusic", "href": h, "kind": "video"},
+                          {"id": "2", "title": "true", "channel": "isq", "href": "https://www.youtube.com/watch?v=i", "kind": "video"}]}
+        els = [{"id": "5", "label": "true", "href": h}, {"id": "6", "label": "Shirobon - Pursuit | Just Shapes & Beats 3 minutes", "href": h},
+               {"id": "7", "label": "ISQ - PURSUIT (VIZUALIZER)", "href": "https://www.youtube.com/watch?v=i"}]
+        L.call.side_effect = lambda cmd, **a: vr if cmd == "video_results" else {"elements": els}
+        got = media.results(L)
+        self.assertEqual([g["title"][:16] for g in got], ["Shirobon - Pursu", "ISQ - PURSUIT (V"]); self.assertEqual(got[0]["channel"], "ShirobonMusic")
+
 if __name__ == "__main__": unittest.main()

@@ -37,11 +37,21 @@ def rank(query, results):
     return out
 
 def results(link):
+    got = []
     try:
         got = (link.call("video_results", timeout=15, limit=25) or {}).get("results") or []
-        if got: return got
+        # 2.0.1-2.1.0 extensions read the thumbnail link ("2:05 Now playing" / "true") instead of the title: use the page's
+        # title links from the snapshot then, keeping the extension's channel names
+        if got and sum(1 for r in got if JUNK.match((r.get("title") or "").strip())) <= len(got) // 3: return got
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
+    snap_res = _snapshot_results(link)
+    chans = {vid(r.get("href")): r.get("channel") for r in got if r.get("channel")}
+    for r in snap_res:
+        if not r.get("channel") and chans.get(vid(r.get("href"))): r["channel"] = chans[vid(r["href"])]
+    return snap_res or got
+
+def _snapshot_results(link):
     if True:
         snap = link.call("snapshot", max=300)  # older extension: fall back to the page's /watch links
         res, seen = [], {}
