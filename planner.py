@@ -238,17 +238,31 @@ def validate(p, task):
     # names/titles stay verbatim: if the model "corrected" the user's words, take them back from the original text
     if p["intent"] in ("media_play", "desktop_app", "web_interact") and p.get("query"):
         p["query"] = verbatim(task, p["query"])
+    if p["intent"] in ("media_play", "web_answer", "web_interact", "open_site") and p.get("query"):
+        p["query"] = intents.strip_filler(p["query"]) or p["query"]  # never search for "me a song by the name of X"
     p["source"] = p.get("source", "model"); p.pop("sure", None)
     return p
 
-def plan(client, task, use_model=True, log=None):
-    """Return a validated plan dict. The model is skipped for unambiguous regex fast paths."""
+def with_context(task, context):
+    if not context: return task
+    lines = []
+    for m in (context.get("turns") or [])[-4:]:
+        lines.append(f"{m['role']}: {str(m['content'])[:160]}")
+    last = context.get("last") or {}
+    if last.get("task"):
+        lines.append(f"previous task: {last['task']} (intent {last.get('intent')}, query {last.get('query')!r}, result: {str(last.get('result'))[:120]})")
+    if not lines: return task
+    return "Earlier in this chat (for resolving 'it', 'that', corrections):\n" + "\n".join(lines) + "\n\nNEW TASK: " + task
+
+def plan(client, task, use_model=True, log=None, context=None):
+    """Return a validated plan dict. The model is skipped for unambiguous regex fast paths.
+    context = {"last": {...previous task...}, "turns": [...]} from the chat this task came from."""
     rule = rule_plan(task)
     if not use_model or client is None or rule.get("sure"):
         return dict(validate(rule, task), source="rules")
     try:
         raw = client.text_chat([{"role": "system", "content": PROMPT.format(today=today().strftime("%B %d, %Y"), year=today().year)},
-                                {"role": "user", "content": task}], json_mode=True, schema=SCHEMA, num_predict=160, temperature=0.0)
+                                {"role": "user", "content": with_context(task, context)}], json_mode=True, schema=SCHEMA, num_predict=160, temperature=0.0)
         obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
     except Exception as e:
         if log: log(f"[plan] model plan unusable ({type(e).__name__}); using rules")

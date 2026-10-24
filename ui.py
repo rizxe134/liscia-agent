@@ -33,6 +33,8 @@ def retro_confirm(root, msg):
     win.grab_set(); win.focus_force(); root.wait_window(win)
     return res["ok"]
 
+from chats import plain_result
+
 def btn(parent, text, cmd, fg=None):
     return tk.Button(parent, text=text, command=cmd, fg=fg or FG, bg=BG, font=FONT, relief="flat", activebackground=fg or FG,
                      activeforeground=BG, highlightbackground=DIM, highlightthickness=1, cursor="hand2")
@@ -449,9 +451,9 @@ class ChatApp:
     def _work(self, text):
         cid = self.chat_id
         try:
-            history = self.store.history(cid)
+            history = self.store.history(cid); ctx = self.store.context(cid)
             self.store.add(cid, "user", text)
-            self.agent = Agent(self.cfg, confirm=self._confirm, log=self._log); self.agent.chat_id = cid
+            self.agent = Agent(self.cfg, confirm=self._confirm, log=self._log); self.agent.chat_id = cid; self.agent.chat_ctx = ctx
             self.agent.on_token = lambda p: self.q.put(("live", p))
             started = []
             def stream(p):
@@ -463,11 +465,11 @@ class ChatApp:
                 else: self.q.put(("agent", out))
                 self.store.add(cid, "assistant", out)
             else:
-                self.q.put(("agent", f"On it -> {out}")); self.q.put(("status", "working on your PC"))
+                self.q.put(("step", f"working on: {out}")); self.q.put(("status", "working on your PC"))
                 result = self.agent.run(out)
-                self.q.put(("agent", f"Task finished: {result}"))
+                self.q.put(("agent", plain_result(result)))
                 run = os.path.basename(getattr(self.agent, "last_run_dir", "") or "") or None
-                self.store.add(cid, "assistant", f"(did task: {out}; result: {result})", run=run)
+                self.store.add(cid, "assistant", plain_result(result), run=run, meta=getattr(self.agent, "last_task_meta", None))
         except Exception as e:
             hint = "" if __import__("providers").provider_name(self.cfg) != "ollama" else "  (is Ollama running? `ollama serve`)"
             self.q.put(("warn", f"Error: {e}{hint}"))

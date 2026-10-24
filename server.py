@@ -118,8 +118,8 @@ class Bridge:
             route = self.router or __import__("core").route
             st = self.store
             cid = chat_id if chat_id and st.get(chat_id) else st.current()["id"]
-            history = st.history(cid); st.add(cid, "user", text)
-            ag.chat_id = cid
+            history = st.history(cid); ctx = st.context(cid); st.add(cid, "user", text)
+            ag.chat_id = cid; ag.chat_ctx = ctx
             kind, out = route(ag.client, text, history, on_token=lambda p: self.hub.emit("token", text=p))
             if kind == "chat":
                 st.add(cid, "assistant", out); self.hub.emit("chat", text=out)
@@ -128,8 +128,10 @@ class Bridge:
                 ag.kill.event.clear()
                 res = ag.run(out)
                 run = os.path.basename(getattr(ag, "last_run_dir", "") or "") or None
-                st.add(cid, "assistant", f"(computer task) {res}", run=run)
-                self.hub.emit("result", text=res)
+                import chats as _chats
+                shown = _chats.plain_result(res)
+                st.add(cid, "assistant", shown, run=run, meta=getattr(ag, "last_task_meta", None) if isinstance(getattr(ag, "last_task_meta", None), dict) else None)
+                self.hub.emit("result", text=shown)
         except Exception as e:
             self.hub.emit("error", text=f"{type(e).__name__}: {e}")
             try:

@@ -217,6 +217,35 @@ L.first_video = async () => {
   throw new Error("no video link on this page");
 };
 
+// 2.0.1: every YouTube result with its title, channel and kind (video / mix / playlist / short), for best-match picking
+L.video_results = async (args) => {
+  const out = [], seen = new Set();
+  const rows = document.querySelectorAll("ytd-video-renderer,ytd-radio-renderer,ytd-playlist-renderer,ytd-rich-item-renderer,ytd-compact-video-renderer,yt-lockup-view-model,ytd-reel-item-renderer");
+  for (const r of rows) {
+    if (r.closest("ytd-ad-slot-renderer,ytd-in-feed-ad-layout-renderer,ytd-promoted-video-renderer")) continue;
+    const a = r.querySelector("a#video-title,a#video-title-link,a.yt-lockup-metadata-view-model-wiz__title,a[href*='/watch'],a[href*='/shorts/']");
+    if (!a || !a.href || seen.has(a.href)) continue; seen.add(a.href);
+    const title = (a.getAttribute("title") || a.innerText || label(a) || "").replace(/\s+/g, " ").trim();
+    const ch = r.querySelector("ytd-channel-name a, #channel-name a, .yt-content-metadata-view-model-wiz__metadata-text");
+    const tag = r.tagName.toLowerCase();
+    const kind = /radio/.test(tag) || /[?&]start_radio=1/.test(a.href) || /^mix\b/i.test(title) ? "mix" : /playlist/.test(tag) || /[?&]list=/.test(a.href) ? "playlist" : /\/shorts\//.test(a.href) || /reel/.test(tag) ? "short" : "video";
+    out.push({id: idOf(a), title: title.slice(0, 160), channel: ch ? ch.innerText.trim().slice(0, 60) : "", href: a.href.slice(0, 200), kind});
+    if (out.length >= (args && args.limit || 25)) break;
+  }
+  return {url: location.href, results: out};
+};
+L.media_state = async () => {
+  const v = document.querySelector("video");
+  const t = (document.querySelector("h1.ytd-watch-metadata yt-formatted-string, #title h1, h1.title") || {}).innerText || document.title.replace(/ - YouTube$/, "");
+  const ch = (document.querySelector("ytd-watch-metadata ytd-channel-name a, #owner #channel-name a") || {}).innerText || "";
+  return {url: location.href, title: (t || "").trim(), channel: ch.trim(), has_video: !!v, paused: v ? v.paused : null, time: v ? v.currentTime : null};
+};
+L.media_control = async (args) => {
+  const v = document.querySelector("video"); if (!v) throw new Error("no video on this page");
+  if (args.op === "pause") v.pause(); else if (args.op === "play") await v.play().catch(() => {});
+  return {paused: v.paused};
+};
+
 // page-change events -> service worker -> agent
 let lastUrl = location.href, timer = null;
 function changed(kind) {

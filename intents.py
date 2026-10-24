@@ -243,8 +243,8 @@ def youtube_request(task):
     if not m:  # "play X on youtube"
         m = re.search(r"\b(?:play|watch|put on)\s+(?!(?:the\s+)?(?:very\s+)?(?:first|1st|top|it|that|this)\b)(?:the\s+)?(?:(?:song|video|track)\s+)?['\"]?(.+?)['\"]?" + _STOP_END, t, re.I)
         if not m: return None
-        q = m.group(1).strip(); return (q, True) if q and q.lower() not in ("youtube", "it") else None
-    q = m.group(1).strip(" '\"")
+        q = strip_filler(m.group(1).strip()) or m.group(1).strip(); return (q, True) if q and q.lower() not in ("youtube", "it") else None
+    q = strip_filler(m.group(1).strip(" '\"")) or m.group(1).strip(" '\"")
     if not q or q.lower() in ("youtube", "it", "something"): return None
     after = t[m.end():]
     return q, bool(_PLAY.search(after) or re.search(r"\b(?:play|listen to|watch)\b", t[:m.start()], re.I))
@@ -340,12 +340,32 @@ def page_info(app=None, run=None):
     except Exception:
         return None, None
 
-def goal_reached(task, url):
-    """Cheap check that a browser goal is met (used to stop early)."""
+def media_target(task):
+    """The thing a play/watch/listen task names ('' for 'play the first video' / 'play it')."""
+    t = fix_typos(task or "")
+    if re.search(r"\b(first|1st|top)\b\s+(?:video|result|one|song)", t, re.I): return ""
+    m = re.search(r"\b(?:play|watch|listen to|put on|find|search(?: for)?|look up)\b(.*)$", t, re.I)
+    return strip_filler(m.group(1)) if m else ""
+
+def goal_reached(task, url, title=None):
+    """Cheap check that a browser goal is met (used to stop early). A named song/video must match the page title."""
     t, u = (task or "").lower(), url or ""
     if re.search(r"\b(first|1st|top)\b.*\b(video|result)\b|\bplay\b", t) and "youtube.com/watch" in u:
-        return True
+        want = media_target(task)
+        if not want or title is None: return not want
+        return title_match(want, title) >= 0.99
     return False
+
+def goal_check(task, snap):
+    """(ok, why) before accepting 'done': a play/watch task must be on a video whose title matches what was asked."""
+    t = (task or "").lower()
+    if not re.search(r"\b(play|watch|listen)\b", t): return True, ""
+    want = media_target(task); url, title = (snap or {}).get("url") or "", (snap or {}).get("title") or ""
+    if not re.search(r"youtube\.com/watch|open\.spotify\.com/(track|album|playlist)|/watch|/video", url):
+        return False, "nothing is playing yet: open the matching video/song first"
+    if want and title_match(want, title) < 0.99:
+        return False, f"the page title \"{title[:80]}\" doesn't match \"{want}\": find the right one (search, then pick the result whose title has every word)"
+    return True, ""
 
 
 SEARCH_HOSTS = re.compile(r"(^|\.)(google\.[a-z.]+|youtube\.com|bing\.com|duckduckgo\.com)$")
@@ -365,3 +385,49 @@ def safe_url(url, known=()):
         return url
     words = " ".join(w for w in re.split(r"[/\-_.?=&]+", path + " " + (u.query or "")) if w and not w.isdigit())
     return "https://www.google.com/search?q=" + urllib.parse.quote_plus(f"site:{re.sub(r'^www[.]', '', host)} {words}".strip())
+
+# ---------------- 2.0.1: filler-free queries for every intent ----------------
+_KIND = r"(?:songs?|videos?|music videos?|tracks?|tunes?|clips?|music|album|playlist|podcast|episode|movie|trailer)"
+_FILLER_LEAD = [
+    r"(?:hey|hi|ok|okay|so|um|uh|yo|please|pls|plz|kindly|just|now)\b[\s,]*",
+    r"(?:can|could|would|will) (?:you|u)\b(?:\s+please)?\s*",
+    r"(?:i (?:want|wanna|would like|'d like|need) (?:you )?to|i want|i wanna|i'd like|let me|let's|lets)\s+",
+    r"(?:go|head)\s+(?:on|to|onto)\s+(?:youtube|spotify|the web)\s+(?:and\s+)?",
+    r"(?:open(?: up)?|use)\s+(?:youtube|spotify)\s+(?:and\s+)?",
+    r"(?:search|look|find|play|put on|listen to|watch|queue|look up|search up|pull up|bring up|show)(?:\s+(?:up|for))?\s+",
+    r"(?:me|us|for me)\s+",
+    r"(?:a|an|the|some|something|that|this)\s+",
+    _KIND + r"\s+",
+    r"(?:by the name of|named|called|titled|with the (?:name|title)|of|about|that goes|which is|that is)\s+",
+]
+_TRAIL = [r"[\s,]+(?:on|in|from|using|via)\s+(?:youtube|spotify|google|chrome|the web)\b.*$", r"[\s,]+(?:for me|please|pls|thanks|thank you|now|right now|again)\s*$",
+          r"[\s,]+(?:and|then)\s+(?:play|click|watch|open|start)\b.*$"]
+
+def strip_filler(q):
+    """'can you go on youtube and find me a song by the name of Frog' -> 'Frog'; 'the song of frog by ptasinski' -> 'frog by ptasinski'.
+    Keeps the user's own words (and casing) for the title/artist; never returns empty."""
+    orig = s = re.sub(r"\s+", " ", (q or "").strip(" .!?'\""))
+    for _ in range(12):
+        before = s
+        for p in _FILLER_LEAD: s = re.sub(r"^" + p, "", s, flags=re.I)
+        for p in _TRAIL: s = re.sub(p, "", s, flags=re.I)
+        s = s.strip(" ,.!?'\"")
+        if s == before: break
+    if not s or re.fullmatch(_KIND + r"|it|that|this|that one|this one|one", s, re.I): return "" if re.fullmatch(r"(?:" + _KIND + r"|it|that|this|that one|this one|one)?", s, re.I) else orig
+    return s
+
+def query_tokens(q):
+    """Significant tokens of a media query (title + artist): 'frog by ptasinski' -> ['frog', 'ptasinski']."""
+    stop = {"by", "the", "a", "an", "of", "and", "ft", "feat", "featuring", "official", "song", "video", "music", "audio", "lyrics", "with", "to", "in", "on"}
+    return [w for w in re.findall(r"[\w']+", (q or "").lower()) if w not in stop]
+
+def title_match(query, title):
+    """Share of the query's significant tokens found in a title (fuzzy per token: 'ptasinski' ~ 'ptasiński')."""
+    import difflib, unicodedata
+    def fold(s): return unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode().lower()
+    toks = query_tokens(fold(query)); words = re.findall(r"[\w']+", fold(title))
+    if not toks: return 0.0
+    hit = sum(1 for t in toks if t in words or any(difflib.SequenceMatcher(None, t, w).ratio() >= 0.85 for w in words if abs(len(w) - len(t)) <= 2))
+    return hit / len(toks)
+
+MIX_RE = re.compile(r"\b(mix|radio|playlist|full album|compilation|1 hour|10 hours|hours? loop|nonstop)\b|^Mix\s*-", re.I)

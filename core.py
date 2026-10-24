@@ -420,6 +420,14 @@ class Agent:
         opens = {}; same_clicks, last_click = 0, None; blocked_opens = 0
         norm = uses_norm_coords(self.cfg)
         system = NORM_SYSTEM if norm else SYSTEM
+        ctx = getattr(self, "chat_ctx", None)
+        try:  # 2.0.1: follow-ups and corrections use the chat context
+            import followups
+            new_task, why = followups.resolve(task, ctx)
+            if why:
+                logf.write(json.dumps({"followup": why, "resolved_task": new_task}) + "\n"); self.log(f"[chat] {why}"); task = new_task
+        except Exception as e:
+            self.log(f"[chat] follow-up check skipped ({type(e).__name__})")
         orig_task = task
         self.kill.start(); self.log(f"Task: {task}\nRun folder: {run_dir}\nAbort: Esc/F12, STOP, or slam mouse into a screen corner.")
         intents.STATE["named"] = intents.named_browser(task)
@@ -432,7 +440,7 @@ class Agent:
             _c = _cmds.parse(task, "x")
             fast_cmd = bool(_c and _c["kind"] == "media" and not _af.explicit_web(task))
         except Exception: fast_cmd = False
-        pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True) and not fast_cmd, log=self.log)
+        pl = planner.plan(self.client, task, use_model=a_cfg.get("planner", True) and not fast_cmd, log=self.log, context=ctx)
         if fast_cmd: pl["source"] = "rules (media command)"
         # APP-FIRST (1.4.4): a task that names an installed/running app is about that app, never its website
         try:
@@ -448,8 +456,22 @@ class Agent:
         logf.write(json.dumps({"plan": pl, "secs": round(time.time() - t_plan, 1)}) + "\n")
         self.log(f"[plan] {pl['intent']}" + (f" -> {', '.join(pl['outputs'])}" if pl["outputs"] else "") + (f" | {pl['query']}" if pl.get("query") else "") +
                  f" ({time.time() - t_plan:.1f}s, {pl.get('source')})")
+        self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
+                               "app": pl.get("app") or "", "result": ""}
         def finish(result):
+            self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
+                                   "app": pl.get("app") or "", "result": str(result)[:300]}
             self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+        # 2.0.1: media_play with a query ALWAYS searches, picks the best-matching result and verifies what plays
+        if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" \
+                and re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I):
+            try:
+                import media
+                intents.note_app("Google Chrome"); self.focus_chrome()
+                return finish(media.youtube_play(self, self.link(), pl["query"], logf))
+            except Exception as e:
+                logf.write(json.dumps({"media_error": str(e)}) + "\n")
+                return finish(f"stopped: couldn't play \"{pl['query']}\" on YouTube ({type(e).__name__}: {e})")
         if pl["intent"] == "web_research_to_files":
             if not ext_ok:
                 return finish("stopped: this needs the Chrome extension to read the web. Open Chrome, open the Liscia Agent panel "
@@ -662,8 +684,8 @@ class Agent:
                               "so I stopped instead of acting on another window."); self.log(f"!! {result}"); break
                 if IS_MAC and step > 1:
                     url, _t = intents.page_info()
-                    if intents.goal_reached(orig_task, url):
-                        result = f"done: goal reached ({url})"; break
+                    if intents.goal_reached(orig_task, url, _t):
+                        result = f"done: now on \"{(_t or url)[:80]}\""; break
                 raw_img = self.capture(); full_w = raw_img.width; crop_off = (0, 0)
                 if getattr(self, "app_binding", None) is not None:  # look ONLY at the bound app's window
                     r = self.app_binding.window_rect()

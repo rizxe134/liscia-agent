@@ -3,6 +3,13 @@
 Each chat keeps its own history/context; task runs are linked to the chat they came from."""
 import json, os, re, secrets, threading, time
 
+def plain_result(result):
+    """Task results in plain words for the chat ('stopped: x' -> 'I stopped: x', 'done: y' -> 'Done: y')."""
+    r = str(result or "").strip()
+    if r.lower().startswith("stopped:"): return "I stopped: " + r[8:].strip()
+    if r.lower().startswith("done:"): return "Done: " + r[5:].strip()
+    return r or "Done."
+
 def default_dir():
     import paths; return os.path.join(paths.data_dir(), "chats")
 
@@ -92,12 +99,13 @@ class ChatStore:
                 self.current_id = None; self._save_state()
             self._notify("list", cid); return True
 
-    def add(self, cid, role, content, run=None):
+    def add(self, cid, role, content, run=None, meta=None):
         with self.lock:
             c = self.get(cid)
             if c is None: raise KeyError(cid)
             m = {"role": role, "content": content, "t": self.clock()}
             if run: m["run"] = run; c.setdefault("runs", []).append(run)
+            if meta: m["task"] = meta
             c["messages"].append(m); c["updated"] = m["t"]
             if role == "user" and c.get("auto_title", True) and sum(1 for x in c["messages"] if x["role"] == "user") == 1:
                 c["title"] = auto_title(content)
@@ -107,6 +115,12 @@ class ChatStore:
         """Model context for this chat only (role/content pairs)."""
         c = self.get(cid) or {"messages": []}
         return [{"role": m["role"], "content": m["content"]} for m in c["messages"] if m["role"] in ("user", "assistant")][-n:]
+
+    def context(self, cid, n=6):
+        """What a follow-up needs: the last few turns and the last task (its query/site/result)."""
+        c = self.get(cid) or {"messages": []}
+        last = next((m["task"] for m in reversed(c["messages"]) if m.get("task")), None)
+        return {"turns": self.history(cid, n), "last": last}
 
     def migrate(self, old_messages):
         """Move a pre-2.0 single conversation into the first chat (once)."""

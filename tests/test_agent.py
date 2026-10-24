@@ -549,7 +549,7 @@ class FakeExt(threading.Thread if False else object):
     def snap(self):
         els = [{"id": "1", "role": "searchbox", "label": "Search", "value": self.typed}, {"id": "2", "role": "button", "label": "Search"}]
         if "results" in self.url: els.append({"id": "7", "role": "link", "label": "Embrace It (Official Video)", "href": "https://www.youtube.com/watch?v=x"})
-        return {"url": self.url, "title": "YouTube", "elements": els, "dialogs": [], "text": "YouTube", "scroll": [0, 100]}
+        return {"url": self.url, "title": "Embrace It (Official Video) - YouTube" if "watch" in self.url else "YouTube", "elements": els, "dialogs": [], "text": "YouTube", "scroll": [0, 100]}
     def loop(self):
         while not self.stop:
             for c in self.link.poll({"version": "test"}, hold=0.05):
@@ -588,7 +588,7 @@ class ExtensionChannel(unittest.TestCase):
         ag = mock.MagicMock(); ag.client = client; ag.kill.killed = False
         ag.cfg = {"safety": {"confirm_risky": True, "risky_words": ["buy"]}}; logs = []; ag.log = logs.append
         res = webagent.run_web(ag, "search youtube for embrace it and play the first video", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
-        self.assertTrue(res.startswith("done: goal reached"), res)
+        self.assertIn("Playing \"Embrace It (Official Video)\"", res)
         self.assertEqual([c for c in self.ext.calls if c != "snapshot"], ["type", "click"])
         self.assertTrue(any("Embrace It" in l for l in logs))
         ag.confirm.assert_not_called()
@@ -737,8 +737,12 @@ class ScrollFakeExt(FakeExt):
     def snap(self):
         els = [{"id": "1", "role": "searchbox", "label": "Search", "value": ""}, {"id": "2", "role": "button", "label": "Search"},
                {"id": "5", "role": "link", "label": "Pursuit (Live)", "href": "https://www.youtube.com/watch?v=a"}]
-        if self.scrolled >= 3: els.append({"id": "9", "role": "link", "label": "Pursuit of Jade OST", "href": "https://www.youtube.com/watch?v=jade", "below": True})
-        return {"url": self.url, "title": "YouTube", "elements": els, "dialogs": [], "text": "", "scroll": [self.scrolled * 800, 8000]}
+        if self.scrolled >= 3:
+            els.append({"id": "9", "role": "link", "label": "Pursuit of Jade OST", "href": "https://www.youtube.com/watch?v=jade", "below": True})
+            els.append({"id": "10", "role": "link", "label": "Pursuit - isq (Official Audio)", "href": "https://www.youtube.com/watch?v=isq", "below": True})
+        titles = {"jade": "Pursuit of Jade OST", "isq": "Pursuit - isq (Official Audio)", "a": "Pursuit (Live)"}
+        cur = self.url.split("watch?v=")[-1] if "watch?v=" in self.url else ""
+        return {"url": self.url, "title": (titles.get(cur, "") + " - YouTube") if cur else "YouTube", "elements": els, "dialogs": [], "text": "", "scroll": [self.scrolled * 800, 8000]}
     def loop(self):
         while not self.stop:
             for c in self.link.poll({"version": "test"}, hold=0.05):
@@ -778,7 +782,7 @@ class V122Scrolling(unittest.TestCase):
             '{"action":"done","summary":"Pursuit of Jade not found"}', '{"action":"done","summary":"could not find it"}',
             '{"action":"done","summary":"not found"}', '{"action":"click","id":"9"}', '{"action":"done","summary":"playing"}']
         res = webagent.run_web(self._ag(client), "play pursuit of jade", [], open(os.devnull, "w"), link=self.link, sleep=lambda s: None)
-        self.assertIn("watch?v=jade", res); self.assertEqual(self.ext.calls.count("scroll"), 3); self.assertIn("click", self.ext.calls)
+        self.assertIn("Pursuit of Jade OST", res); self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=jade"); self.assertEqual(self.ext.calls.count("scroll"), 3); self.assertIn("click", self.ext.calls)
     def test_find_action(self):
         import webagent
         client = mock.MagicMock(); client.text_chat.side_effect = ['{"action":"find","text":"pursuit of jade"}', '{"action":"click","id":"9"}', '{"action":"done","summary":"ok"}']
@@ -795,7 +799,7 @@ class V122Scrolling(unittest.TestCase):
         a.kill.start = lambda: None; a.ext = self.link; a.focus_chrome = lambda: None
         with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
             res = a.run("play pursuit of jade on youtube")
-        self.assertTrue(res.startswith("done"), res); self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=jade")
+        self.assertIn('Playing "Pursuit of Jade OST"', res); self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=jade")
         client.text_chat.assert_not_called(); client.chat.assert_not_called()
     def test_plan_play_title(self):
         acts, rest = _intents.plan("play pursuit of jade ost on youtube")
@@ -852,8 +856,8 @@ class V123Agent(V122Scrolling):
         client = mock.MagicMock(); a = self._agent(client)
         with mock.patch.object(extlink, "LINK", self.link), mock.patch("time.sleep"):
             res = a.run(USER_SENTENCE)
-        self.assertTrue(res.startswith("done"), res)
-        self.assertIn("navigate", self.ext.calls); self.assertIn("/watch", self.ext.url)
+        self.assertIn('Playing "Pursuit - isq', res)  # title AND artist matched, not "Pursuit (Live)" or "Pursuit of Jade"
+        self.assertIn("navigate", self.ext.calls); self.assertEqual(self.ext.url, "https://www.youtube.com/watch?v=isq")
         client.chat.assert_not_called(); client.text_chat.assert_not_called()
     def test_vision_stops_on_blank_screenshots(self):
         client = mock.MagicMock(); a = self._agent(client)

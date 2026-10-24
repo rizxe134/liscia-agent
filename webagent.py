@@ -200,7 +200,7 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     import intents
     if info is None: info = intents.is_question(task)
     if info: max_steps = min(max_steps, agent.cfg.get("agent", {}).get("info_max_steps", 8))
-    seen = {}; dead_urls = set(); read = ""
+    seen = {}; dead_urls = set(); read = ""; rejected_done = 0
     plain_open = None
     if intents.is_plain_open(task): plain_open = intents.plan(task)[0][0]["url"]
     max_els = 40 if info else 70
@@ -235,7 +235,13 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             notes.append("You said it was not found, but you have not scrolled yet. I scrolled down: check the new elements.")
             agent.log(f"[web{step}] not found yet -> scrolling down instead of giving up")
         if act["action"] == "done":
-            logf.write(json.dumps(entry) + "\n"); return act.get("summary", "done")
+            ok, why = intents.goal_check(task, snap)
+            if not ok and rejected_done < 2:
+                rejected_done += 1; history.append(f"web{step}: done -> REJECTED: {why}"); notes.append(f"Not done yet: {why}.")
+                logf.write(json.dumps(dict(entry, rejected=why)) + "\n"); agent.log(f"[web{step}] not done: {why}"); continue
+            logf.write(json.dumps(dict(entry, goal_check="ok" if ok else why)) + "\n")
+            summ = act.get("summary", "done")
+            return summ if ok else f"stopped: couldn't confirm the goal ({why}). Last page: {snap.get('title') or snap.get('url')}"
         if act["action"] == "answer":
             logf.write(json.dumps(entry) + "\n"); return act["text"]
         if act["action"] == "read_page":
@@ -329,8 +335,9 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         if act["action"] in ("navigate", "new_tab") and plain_open and site_matches(snap.get("url"), plain_open) and not is_404(snap):
             logf.write(json.dumps({"done": "site open"}) + "\n")
             return f"done: opened {snap.get('title') or snap.get('url')}"
-        if intents.goal_reached(task, snap.get("url")):
-            return f"done: goal reached ({snap.get('url')})"
+        if intents.goal_reached(task, snap.get("url"), snap.get("title")):
+            t = (snap.get("title") or "").replace(" - YouTube", "")
+            return f"Playing \"{t}\" on YouTube." if "youtube.com/watch" in (snap.get("url") or "") and t else f"done: {t or snap.get('url')}"
     if info:  # out of steps on a question: answer from whatever page we're on instead of nothing
         try:
             ans = agent.answer_question(link, task, logf, max_pages=1)

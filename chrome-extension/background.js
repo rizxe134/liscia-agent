@@ -117,6 +117,9 @@ async function run(cmd, a) {
     case "wait_for": return await inPage(tab.id, "wait_for", [a]);
     case "extract_text": return await inPage(tab.id, "extract_text", [a]);
     case "first_video": return await inPage(tab.id, "first_video", []);
+    case "video_results": return await inPage(tab.id, "video_results", [a]);
+    case "media_state": return await inPage(tab.id, "media_state", [a]);
+    case "media_control": return await inPage(tab.id, "media_control", [a]);
   }
   throw new Error("unknown command " + cmd);
 }
