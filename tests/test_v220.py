@@ -26,7 +26,7 @@ class OverlayInPage(unittest.TestCase):
     def tearDownClass(cls): cls.b.close(); cls.pw.stop()
     def page(self):
         p = self.b.new_page(viewport={"width": 1000, "height": 600}); p.set_content(PAGE)
-        p.evaluate(STUB); p.add_script_tag(content=CONTENT); return p
+        p.evaluate(STUB); p.evaluate("(()=>{" + CONTENT + "})()"); return p
     def ids(self, p):
         s = p.evaluate("window.__liscia.snapshot({})")
         ids = {e["label"]: e["id"] for e in s["elements"]}

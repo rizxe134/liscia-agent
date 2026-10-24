@@ -104,8 +104,7 @@ function vizHost() {
   const h = document.createElement("liscia-agent-overlay"); h.id = HOST_ID; h.setAttribute("aria-hidden", "true");
   h.style.cssText = "all:initial;position:fixed;inset:0;z-index:2147483647;pointer-events:none;display:block";
   const r = h.attachShadow({mode: "closed"});
-  r.innerHTML = `<style>
-    :host{all:initial}
+  const st = document.createElement("style"); st.textContent = `:host{all:initial}
     #cur{position:fixed;left:0;top:0;width:26px;height:26px;transform:translate(-100px,-100px);transition:transform .45s cubic-bezier(.22,.8,.3,1);
          filter:drop-shadow(0 2px 3px rgba(0,0,0,.45));display:none}
     #lab{position:fixed;left:0;top:0;transform:translate(-200px,-200px);transition:transform .45s cubic-bezier(.22,.8,.3,1);font:600 12px/1.2 -apple-system,Segoe UI,sans-serif;
@@ -116,10 +115,16 @@ function vizHost() {
     #ban{position:fixed;top:6px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:10px;background:rgba(17,17,17,.92);color:#fff;
          font:600 12px/1 -apple-system,Segoe UI,sans-serif;padding:6px 8px 6px 12px;border-radius:999px;border:1px solid #3dff8f;box-shadow:0 2px 10px rgba(0,0,0,.35);transition:opacity .2s}
     #ban .dot{color:#3dff8f;animation:pulse 1.2s infinite}@keyframes pulse{50%{opacity:.3}}
-    #stop{pointer-events:auto;cursor:pointer;background:#ff4d5e;color:#fff;border:0;border-radius:999px;padding:4px 10px;font:700 11px -apple-system,Segoe UI,sans-serif}
-  </style>
-  <div id="box"></div><svg id="cur" viewBox="0 0 24 24"><path d="M3 2l7.5 19 2.6-7.9L21 10.5z" fill="#3dff8f" stroke="#0b0b0b" stroke-width="1.6" stroke-linejoin="round"/></svg>
-  <div id="lab"></div><div id="ban"><span class="dot">●</span><span>Liscia Agent is using this tab</span><button id="stop">Stop</button></div>`;
+    #stop{pointer-events:auto;cursor:pointer;background:#ff4d5e;color:#fff;border:0;border-radius:999px;padding:4px 10px;font:700 11px -apple-system,Segoe UI,sans-serif}`; r.appendChild(st);  // no innerHTML: works under Trusted Types
+  const mk = (tag, id, ns) => { const e = ns ? document.createElementNS(ns, tag) : document.createElement(tag); if (id) e.id = id; r.appendChild(e); return e; };
+  mk("div", "box");
+  const SVG = "http://www.w3.org/2000/svg", svg = mk("svg", "cur", SVG); svg.setAttribute("viewBox", "0 0 24 24");
+  const path = document.createElementNS(SVG, "path"); path.setAttribute("d", "M3 2l7.5 19 2.6-7.9L21 10.5z");
+  for (const [k, v] of [["fill", "#3dff8f"], ["stroke", "#0b0b0b"], ["stroke-width", "1.6"], ["stroke-linejoin", "round"]]) path.setAttribute(k, v);
+  svg.appendChild(path); mk("div", "lab");
+  const ban = mk("div", "ban"), dot = document.createElement("span"), txt = document.createElement("span"), stop = document.createElement("button");
+  dot.className = "dot"; dot.textContent = "\u25cf"; txt.textContent = "Liscia Agent is using this tab"; stop.id = "stop"; stop.textContent = "Stop";
+  ban.append(dot, txt, stop);
   r.getElementById("stop").addEventListener("click", (ev) => { ev.stopPropagation(); try { chrome.runtime.sendMessage({type: "agent_stop"}); } catch (e) {} vizOff(); });
   document.documentElement.appendChild(h); VIZ.host = h; VIZ.root = r; return r;
 }
