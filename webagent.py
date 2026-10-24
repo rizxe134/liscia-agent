@@ -133,16 +133,19 @@ def site_matches(url, want):
     a, b = host(url), host(want)
     return bool(a) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
-def top_result(snap):
-    """First real search result link (not Google's own pages, not footer junk)."""
+def top_result(snap, skip=()):
+    """First real search result link (not Google's own pages, not footer junk). Articles beat site home pages."""
+    homes = []
     for e in snap.get("elements") or []:
         h = e.get("href") or ""
+        if h in skip: continue
         if e.get("role") != "link" or not h.startswith("http") or is_junk(e): continue
         host = re.sub(r"^https?://", "", h).split("/")[0].lower()
         if re.search(r"(^|\.)google\.|gstatic\.|googleusercontent\.|youtube\.com$|webcache", host): continue
         if len((e.get("label") or "").split()) < 2: continue
+        if re.sub(r"^https?://[^/]+", "", h).strip("/") == "": homes.append(e); continue  # a home page: only if nothing better
         return e
-    return None
+    return homes[0] if homes else None
 
 def format_snapshot(s, max_els=70, task=""):
     lines = [f"URL: {s.get('url','')}", f"TITLE: {s.get('title','')}"]

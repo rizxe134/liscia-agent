@@ -4,6 +4,7 @@ import sys
 import screen
 import browser_dom
 import intents
+import followups
 from actions import NeedsVision
 IS_MAC = sys.platform == "darwin"
 OS_NAME = "macOS" if IS_MAC else "Windows"
@@ -105,6 +106,28 @@ class LoopGuard:
         if self.count >= self.block: return 2
         if self.count >= self.warn: return 1
         return 0
+
+ARTICLE_RE = re.compile(r"\b(article|source|website|web ?site|web ?page|blog|post|read it|go to (?:a|the) (?:page|site))\b", re.I)
+
+def split_followon(task):
+    """'search the top 10 fastest cars then open github in a new tab then xbox' -> ('search the top 10 fastest cars', 'open github ... then xbox')."""
+    parts = re.split(r"\s*,?\s*\b(?:and\s+)?then\b\s*(?=(?:can you\s+|please\s+|in a new tab\s+)?(?:open|go to|launch|take me to|visit|in a new tab|on a new tab))", task, maxsplit=1, flags=re.I)
+    return (parts[0].strip(), parts[1].strip()) if len(parts) == 2 else (task, "")
+
+def list_len(ans):
+    return len(re.findall(r"(?m)(?:^|\s)(?:#?\d{1,2}[.):]|\d{1,2}\s*[-\u2013]\s)\s*\S", ans or ""))
+
+def tidy_answer(a):
+    """Lists / list-strings from the model ("['1. A', '2. B']") become plain numbered lines."""
+    if isinstance(a, (list, tuple)): return "\n".join(str(x).strip() for x in a if str(x).strip())
+    if isinstance(a, dict): return "\n".join(f"{k}: {v}" for k, v in a.items())
+    s = str(a or "").strip()
+    if s.startswith("[") and s.endswith("]"):
+        try:
+            import ast; v = ast.literal_eval(s)
+            if isinstance(v, (list, tuple)): return tidy_answer(v)
+        except Exception: pass
+    return s
 
 class Agent:
     def __init__(self, cfg, confirm=console_confirm, log=print, gui=None, capture=None, client=None, executor=None, dom=None):
@@ -215,28 +238,38 @@ class Agent:
             obj = json.loads(raw[raw.index("{"): raw.rindex("}") + 1])
         except ValueError:
             return (raw or "").strip() if raw and "{" not in raw else ""
-        ans = str(obj.get("answer") or "").strip()
-        return "" if obj.get("need_more") and not ans else ans
+        return "" if obj.get("need_more") and not obj.get("answer") else tidy_answer(obj.get("answer"))
 
-    def answer_question(self, link, question, logf, max_pages=2):
-        """Read the results page; answer. If it isn't enough, open the top real result and answer from that."""
+    def answer_question(self, link, question, logf, max_pages=3, article=False, count=0):
+        """Read the results page; answer. If it isn't enough (or a list is short, or the user wants an article), open the best
+        real results one by one and answer from them. 2.3.0: more text, complete lists, article mode, best-so-far fallback."""
         import webagent
         t0 = time.time(); time.sleep(1.0)
-        limit = self.cfg["agent"].get("answer_chars", 2500)
-        for page in range(max_pages):
-            text = webagent.main_text(link, limit); url = ""
-            try: snap = link.call("snapshot", max=60); url = snap.get("url", "")
+        if not isinstance(getattr(self, "cfg", None), dict): self.cfg = {"agent": {}}
+        limit = self.cfg.get("agent", {}).get("answer_chars", 7000)
+        count = count or intents.requested_count(question) or 0
+        best, results_snap, tried = "", None, set()
+        for page in range(max_pages + (1 if article else 0)):
+            try: snap = link.call("snapshot", max=80) or {}
             except Exception: snap = {}
-            self.log(f"[web] reading {url[:80]} ({len(text)} chars)")
-            ans = self._answer_from(question, text, url) if text else ""
-            logf.write(json.dumps({"answer_try": page + 1, "url": url, "chars": len(text), "answer": ans[:500], "secs": round(time.time() - t0, 1)}) + "\n")
-            if ans: return ans
-            if page + 1 >= max_pages: break
-            top = webagent.top_result(snap)
-            if not top: break
-            self.log(f"[web] not enough on the results page - opening \"{top['label'][:60]}\"")
-            webagent.nav(link, top["href"], self.log); time.sleep(1.5)
-        return "I searched but couldn't find a clear answer on the page."
+            url = snap.get("url", "")
+            on_results = bool(re.search(r"google\.[a-z.]+/search|bing\.com/search|duckduckgo\.com", url))
+            if on_results and results_snap is None: results_snap = snap
+            if not (article and on_results):
+                text = webagent.main_text(link, limit)
+                self.log(f"[web] reading {url[:80]} ({len(text)} chars)")
+                ans = self._answer_from(question, text, url) if text else ""
+                short = bool(ans) and count >= 3 and list_len(ans) < count
+                logf.write(json.dumps({"answer_try": page + 1, "url": url, "chars": len(text), "answer": ans[:500], "short": short,
+                                       "secs": round(time.time() - t0, 1)}) + "\n")
+                if ans and list_len(ans) > list_len(best) or (ans and not best): best = ans + (f"\n\nSource: {snap.get('title') or url} ({url})" if article and not on_results else "")
+                if ans and not short: return best
+            nxt = webagent.top_result(results_snap or snap, skip=tried) if results_snap or on_results else None
+            if not nxt: break
+            tried.add(nxt["href"])
+            self.log(f"[web] opening the article \"{nxt['label'][:60]}\"")
+            webagent.nav(link, nxt["href"], self.log); time.sleep(2.0)
+        return best or "I searched but couldn't find a clear answer on the page."
 
     EXTRACT_SYSTEM = ("You turn web page text into a document. Today is {today}. Use ONLY facts in the text. Reply with ONE JSON object: "
                       '{{"title": "<short title>", "summary": "<3-6 sentence summary answering the request>", '
@@ -537,6 +570,16 @@ class Agent:
             self.log(f"[chat] retry check skipped ({type(e).__name__})")
         search_only = (re.search(r"\b(search|look(?:ing)? (?:for|up)|find)\b", task, re.I) and not re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I)
                        and not excl and not (ctx or {}).get("media_before") and not (pl.get("intent") == "media_play" and followups.is_retry(task, ctx)))
+        nth = None
+        try:
+            import media; nth = media.ordinal_pick(orig_task) if re.search(r"youtube|video", orig_task, re.I) else None
+        except Exception: nth = None
+        if nth and ext_ok and pl["intent"] in ("media_play", "open_site", "web_interact", "search"):
+            try:
+                intents.note_app("Google Chrome"); self.focus_chrome()
+                return finish(media.youtube_nth(self, self.link(), nth[0], nth[1], logf))
+            except Exception as e:
+                logf.write(json.dumps({"media_error": str(e)}) + "\n")
         if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" and not search_only:
             try:
                 import media
@@ -569,9 +612,23 @@ class Agent:
             try:
                 import webagent, urllib.parse
                 intents.note_app("Google Chrome"); self.focus_chrome()
-                url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(pl["query"] or task)
+                first, later = split_followon(task)
+                q = pl["query"] or first
+                url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
                 webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
-                return finish(self.answer_question(self.link(), task, logf))
+                question = q if (orig_task != task or len(first.split()) < 5 or followups.is_retry(orig_task, ctx)) else first
+                if q.lower() not in question.lower(): question = f"{question} ({q})"
+                ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or 0)
+                if later:  # 2.3.0: "search X then open github in a new tab then xbox" - do the rest too
+                    fixed, rest = intents.plan(later)
+                    opened = []
+                    for a in fixed:
+                        if a.get("action") == "open_url":
+                            webagent.nav(self.link(), a["url"], self.log, new_tab=True); opened.append(re.sub(r"^https?://(www\.)?", "", a["url"]).split("/")[0])
+                    logf.write(json.dumps({"followon": later, "opened": opened, "unhandled": rest}) + "\n")
+                    if opened: ans += "\n\nAlso opened in new tabs: " + ", ".join(opened) + "."
+                    if rest: ans += f"\n(I didn't do: \"{rest}\" - ask me again for that part.)"
+                return finish(ans)
             except Exception as e:
                 logf.write(json.dumps({"web_error": str(e)}) + "\n")
                 return finish(f"stopped: the Chrome extension step failed ({type(e).__name__}: {e})")

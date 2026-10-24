@@ -4,7 +4,7 @@ website/browser/web/online/.com version. Applied in code after the planner, for 
 import re, sys
 import appindex, intents
 
-EXPLICIT_WEB = re.compile(r"\b(website|web ?site|web ?page|webpage|web app|web player|web version|browser|online|(?:in|on|using|with) (?:google )?chrome|"
+EXPLICIT_WEB = re.compile(r"\b(website|web ?site|web ?page|webpage|web app|web player|web version|browser|online|(?:in|on|using|with) (?:google )?chrome|(?:in|on) (?:a |another |a new |new |separate )?(?:new |another |separate )?tab|"
                           r"in safari|in firefox|in edge|on the web|the web)\b|\.(com|org|net|io|tv|app|co)\b|https?://|www\.", re.I)
 BROWSERS = {"google chrome", "chrome", "safari", "firefox", "mozilla firefox", "microsoft edge", "edge", "brave", "opera", "arc", "chromium"}
 # common words never treated as app names on their own (an index can contain apps called "Music", "Clock", "Mail", ...)

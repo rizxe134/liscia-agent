@@ -366,4 +366,103 @@ chrome.runtime.onMessage.addListener((m) => {
   if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return;
   const e = document.elementFromPoint(x, y); if (e && e !== document.body) flash(e);
 });
+
+// 2.3.0: a livelier agent cursor. It glides for every action (find, read, wait, scroll, type), drifts over the area being read
+// while the model thinks, and wanders toward likely next targets. One timer, transform-only CSS transitions, pointer-events:none,
+// lives in the closed shadow overlay (never in snapshots / find / elementFromPoint). Respects prefers-reduced-motion.
+const MOTION = {last: Date.now(), area: null, line: 0, timer: null, mode: "", busy: false};
+const REDUCED = (() => { try { return matchMedia("(prefers-reduced-motion: reduce)").matches; } catch (e) { return false; } })();
+function vizReady() { return VIZ.on && VIZ.cursor; }
+function moveTo(x, y, text, ms = 450) {
+  if (!vizReady()) return;
+  const r = vizHost(), cur = r.getElementById("cur"), lab = r.getElementById("lab");
+  x = Math.max(4, Math.min(innerWidth - 20, x)); y = Math.max(4, Math.min(innerHeight - 20, y));
+  cur.style.display = "block"; const ease = `transform ${ms}ms cubic-bezier(.22,.8,.3,1)`;
+  cur.style.transition = ease; lab.style.transition = ease;
+  cur.style.transform = `translate(${x - 3}px,${y - 2}px)`;
+  if (text != null) { lab.style.display = text ? "block" : "none"; lab.textContent = String(text).slice(0, 60); }
+  lab.style.transform = `translate(${Math.min(x + 18, innerWidth - 220)}px,${y + 18}px)`;
+  VIZ.x = x; VIZ.y = y;
+}
+function touch(mode, area) { MOTION.last = Date.now(); if (mode != null) MOTION.mode = mode; if (area !== undefined) { MOTION.area = area; MOTION.line = 0; } ensureTimer(); }
+function readArea() {
+  const c = document.querySelector("article, main, [role=main], #content, #main, #search, #contents") || document.body;
+  return c;
+}
+function visRect(e) {
+  if (!e || !e.getBoundingClientRect) return null;
+  const r = e.getBoundingClientRect(), l = Math.max(r.left, 8), t = Math.max(r.top, 40), rt = Math.min(r.right, innerWidth - 24), b = Math.min(r.bottom, innerHeight - 24);
+  return rt - l > 30 && b - t > 20 ? {l, t, r: rt, b} : null;
+}
+function likelyTargets() {
+  const out = [];
+  for (const e of document.querySelectorAll('a[href] h3, input:not([type=hidden]), textarea, button, a#video-title, a#video-title-link, [role=button]')) {
+    if (out.length > 12) break; const r = e.getBoundingClientRect();
+    if (r.width > 8 && r.height > 8 && r.top > 40 && r.bottom < innerHeight - 10 && r.left >= 0 && r.right <= innerWidth && !isOverlay(e)) out.push(r);
+  }
+  return out;
+}
+function tick() {
+  if (!vizReady()) { clearInterval(MOTION.timer); MOTION.timer = null; return; }
+  if (MOTION.busy || document.hidden) return;
+  const idle = Date.now() - MOTION.last;
+  if (idle < 650) return;
+  if (idle > 90000) return;  // nothing happening for a long time: stay put
+  const area = visRect(MOTION.area) || visRect(readArea()) || {l: 40, t: 80, r: innerWidth - 60, b: innerHeight - 60};
+  const reading = MOTION.mode === "reading" || MOTION.mode === "scanning";
+  if (!reading && Math.random() < 0.35) {  // drift toward a likely next target (a result, a field, a button)
+    const t = likelyTargets(); if (t.length) { const r = t[Math.floor(Math.random() * t.length)];
+      moveTo(r.left + Math.min(r.width / 2, 60), r.top + r.height / 2, "thinking\u2026", REDUCED ? 0 : 900); return; }
+  }
+  // follow reading lines across the area: left -> right, then the next line down
+  const lines = Math.max(3, Math.min(14, Math.floor((area.b - area.t) / 46))), n = MOTION.line++ % (lines * 2);
+  const row = Math.floor(n / 2), right = n % 2 === 1;
+  const y = area.t + 18 + row * ((area.b - area.t - 36) / Math.max(1, lines - 1)) + (Math.random() * 8 - 4);
+  const x = right ? area.l + (area.r - area.l) * (0.6 + Math.random() * 0.3) : area.l + 10 + Math.random() * 30;
+  moveTo(x, y, reading ? (MOTION.mode === "scanning" ? "looking at the page\u2026" : "reading\u2026") : "thinking\u2026", REDUCED ? 0 : (right ? 1100 : 700));
+}
+function ensureTimer() { if (!MOTION.timer && vizReady()) MOTION.timer = setInterval(tick, 950); }
+function wrap(name, before, after) {
+  const orig = L[name]; if (typeof orig !== "function") return;
+  L[name] = async (...a) => {
+    if (vizReady()) { MOTION.busy = true; try { await before(...a); } catch (e) {} finally { MOTION.busy = false; } }
+    MOTION.last = Date.now();
+    const res = await orig(...a);
+    if (vizReady()) { try { await (after || (() => {}))(res, ...a); } catch (e) {} touch(); }
+    return res;
+  };
+}
+const glideEl = async (e, text, ms = 450) => { const r = e && e.getBoundingClientRect(); if (!r) return; moveTo(r.left + r.width / 2, r.top + r.height / 2, text, ms); await sleep(REDUCED ? 0 : ms); };
+const origViz = L.viz;
+L.viz = async (o = {}) => { const r = await origViz(o); if (o.on !== false) { touch("scanning", null); if (VIZ.cursor) moveTo(VIZ.x, VIZ.y, ""); } return r; };
+wrap("snapshot", async () => { touch("scanning", readArea()); });
+wrap("extract_text", async (args = {}) => {
+  let e = null; try { e = args.id ? find(args.id) : readArea(); } catch (x) {}
+  const v = visRect(e); if (v) moveTo(v.l + 10, v.t + 14, "reading\u2026", 500);
+}, async (res, args = {}) => { let e = null; try { e = args.id ? find(args.id) : readArea(); } catch (x) {} touch("reading", e); });
+wrap("find_text", async (args = {}) => { moveTo(innerWidth / 2, 90, `looking for "${String(args.text || "").slice(0, 36)}"`, 450); await sleep(REDUCED ? 0 : 300); },
+  async (res) => { if (res && res.found && res.id) { let e = null; try { e = find(res.id); } catch (x) {} if (e) { await glideEl(e, "found " + (res.label || "").slice(0, 40), 500); touch("thinking", e); } } });
+wrap("wait_for", async (args = {}) => {
+  const v = visRect(readArea()) || {l: innerWidth / 3, t: innerHeight / 3, r: innerWidth * 2 / 3, b: innerHeight * 2 / 3};
+  moveTo((v.l + v.r) / 2, (v.t + v.b) / 2, "waiting for " + String(args.text || args.selector || "the page").slice(0, 36), 500);
+});
+wrap("hover", async (id) => { await glideEl(find(id), "pointing at " + label(find(id)).slice(0, 40)); });
+wrap("scroll", async (args = {}) => {
+  const down = args.direction !== "up", area = visRect(readArea()) || {l: 40, t: 80, r: innerWidth - 60, b: innerHeight - 60};
+  const x = Math.min(area.r - 30, innerWidth - 70);
+  moveTo(x, down ? area.t + 40 : area.b - 40, "scrolling " + (down ? "down" : "up"), 250); await sleep(REDUCED ? 0 : 260);
+  moveTo(x, down ? area.b - 40 : area.t + 40, null, 650);  // travel along the scroll area while the page moves
+}, async () => { touch("scanning", readArea()); });
+wrap("type", async (id, text) => {
+  const e = find(id); await glideEl(e, "typing", 400);
+  const r = e.getBoundingClientRect(), s = e.type === "password" ? "\u2022".repeat(String(text || "").length) : String(text || ""), lab = vizHost().getElementById("lab");
+  const steps = Math.min(s.length, 24), per = REDUCED ? 0 : Math.max(18, Math.min(45, 700 / Math.max(1, steps)));
+  for (let i = 1; i <= steps; i++) {  // caret walks across the field while the text appears in the label
+    const shown = s.slice(0, Math.ceil(s.length * i / steps));
+    moveTo(Math.min(r.left + 12 + (r.width - 24) * i / steps, r.right - 8), r.top + r.height / 2 + (i % 2 ? 1 : -1), null, per);
+    lab.textContent = "typing \u201c" + (shown.length > 40 ? "\u2026" + shown.slice(-40) : shown) + "\u201d"; await sleep(per);
+  }
+});
+wrap("click", async () => {}, async () => { MOTION.mode = "thinking"; });
+L.viz_pos = () => ({x: Math.round(VIZ.x), y: Math.round(VIZ.y), mode: MOTION.mode, moving: !!MOTION.timer});
 })();

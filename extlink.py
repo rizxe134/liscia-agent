@@ -45,6 +45,9 @@ class ExtensionLink:
         """Return a list of commands (possibly empty after `hold` seconds)."""
         self.last_poll = self.clock()
         if info: self.info.update(info)
+        if info and info.get("version") and not getattr(self, "_reload_sent", False) and needs_reload(info["version"]):
+            self._reload_sent = True  # 2.3.0: an older 2.2.x+ extension reloads itself once so updated unpacked files take effect
+            self.cmds.put({"id": -1, "cmd": "reload_extension", "args": {}})
         out = []
         try:
             out.append(self.cmds.get(timeout=hold))
@@ -73,3 +76,13 @@ class ExtensionLink:
                 "last_event": self.events[-1] if self.events else None}
 
 LINK = ExtensionLink()  # one per process: shared by the chat app's agent and the panel's agent
+
+APP_VERSION = "2.3.0"
+
+def _v(s):
+    try: return tuple(int(x) for x in str(s).split(".")[:3])
+    except ValueError: return (0,)
+
+def needs_reload(ext_version, app=None):
+    """Self-reload exists since 2.2.0; only ask extensions that are older than this app."""
+    return (2, 2, 0) <= _v(ext_version) < _v(app or APP_VERSION)

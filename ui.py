@@ -120,6 +120,7 @@ class SettingsWindow:
         style_tabs(st)
         nb = self.nb = ttk.Notebook(top, style="R.TNotebook"); nb.pack(fill="both", expand=True, padx=6, pady=6)
         w = tk.Frame(nb, bg=BG); nb.add(w, text=" MODELS ")
+        self.dl_tab = tk.Frame(nb, bg=BG); nb.add(self.dl_tab, text=" DOWNLOAD ")
         self.theme_tab = tk.Frame(nb, bg=BG); nb.add(self.theme_tab, text=" THEMES ")
         self.build_themes(self.theme_tab)
         top.option_add("*TCombobox*Listbox.background", BG); top.option_add("*TCombobox*Listbox.foreground", FG)
@@ -152,9 +153,7 @@ class SettingsWindow:
         self.vm_hint = L("Pick from the list or type any model name.", fg=DIM); self.vm_hint.pack(fill="x", padx=12)
         # ollama pull
         self.pull_frame = tk.Frame(w, bg=BG); self.pull_frame.pack(fill="x", padx=12, pady=(10, 0))
-        tk.Label(self.pull_frame, text="PULL A LOCAL MODEL", fg=FG, bg=BG, font=FONT).pack(side="left")
-        self.pull_name = tk.Entry(self.pull_frame, bg=BG, fg=FG, font=FONT, insertbackground=FG, width=22, relief="flat", highlightthickness=1, highlightbackground=LINE)
-        self.pull_name.pack(side="left", padx=6); btn(self.pull_frame, "[ PULL ]", self.pull).pack(side="left")
+        btn(self.pull_frame, "[ DOWNLOAD MORE LOCAL MODELS \u2192 ]", lambda: self.nb.select(self.dl_tab)).pack(side="left")
         self.pull_state = L("", fg=DIM); self.pull_state.pack(fill="x", padx=12)
         self.fb = tk.BooleanVar(value=self.cfg["provider"].get("fallback_local", True))
         tk.Checkbutton(w, text="If the cloud provider fails, fall back to the local Ollama model", variable=self.fb, fg=FG, bg=BG, selectcolor=BG,
@@ -169,6 +168,7 @@ class SettingsWindow:
         bar = tk.Frame(w, bg=BG); bar.pack(side="bottom", pady=10)
         btn(bar, "[ SAVE ]", self.save).pack(side="left", padx=6); btn(bar, "[ CLOSE ]", top.destroy).pack(side="left", padx=6)
         top.bind("<Escape>", lambda e: top.destroy())
+        self.build_downloads(self.dl_tab)
         self.on_provider()
 
     def ui(self, f): self.app.root.after(0, f)
@@ -283,7 +283,120 @@ class SettingsWindow:
             self.ui(lambda: self.key_state.config(text=("OK: " if ok else "FAILED: ") + msg, fg=FG if ok else WARN))
         threading.Thread(target=work, daemon=True).start()
 
+    def build_downloads(self, w):
+        """2.3.0: curated Ollama models with size / RAM / role, download with progress + cancel, installed list with delete."""
+        import modelhub
+        from tkinter import ttk
+        self.ram = modelhub.system_ram_gb()
+        L = lambda t, fg=FG, bold=False, **k: tk.Label(w, text=t, fg=fg, bg=BG, font=FONT + (("bold",) if bold else ()), anchor="w", justify="left", **k)
+        L("> DOWNLOAD MORE LOCAL MODELS", bold=True).pack(fill="x", padx=12, pady=(10, 2))
+        L(f"This computer has {self.ram:g} GB of RAM. Models marked TOO BIG won't run well here." if self.ram else
+          "Couldn't read this computer's RAM.", fg=DIM).pack(fill="x", padx=12)
+        self.how_open = False
+        self.how_btn = btn(w, "\u25b8 HOW TO (step by step)", self.toggle_howto); self.how_btn.pack(anchor="w", padx=12, pady=(6, 0))
+        self.how_lbl = tk.Text(w, fg=FG, bg=BG, font=FONT, wrap="word", height=9, relief="flat", highlightthickness=1, highlightbackground=LINE,
+                               padx=8, pady=6, cursor="arrow")
+        self.how_lbl.insert("1.0", modelhub.HOW_TO); self.how_lbl.config(state="disabled")
+        self.how_anchor = tk.Frame(w, bg=BG, height=1); self.how_anchor.pack(fill="x")
+        L("MODEL  (size \u00b7 RAM needed \u00b7 role)").pack(fill="x", padx=12, pady=(8, 0))
+        self.dl_pick = ttk.Combobox(w, style="R.TCombobox", font=FONT, state="readonly", values=[modelhub.label(e, self.ram) for e in modelhub.CATALOG])
+        self.dl_pick.pack(fill="x", padx=12)
+        rec = next((i for i, e in enumerate(modelhub.CATALOG) if e[0] == "qwen2.5:7b"), 0); self.dl_pick.current(rec)
+        self.dl_pick.bind("<<ComboboxSelected>>", lambda e: self.dl_note())
+        self.dl_info = L("", fg=DIM, wraplength=660); self.dl_info.pack(fill="x", padx=12)
+        cr = tk.Frame(w, bg=BG); cr.pack(fill="x", padx=12, pady=(6, 0))
+        tk.Label(cr, text="OR CUSTOM NAME", fg=FG, bg=BG, font=FONT).pack(side="left")
+        self.pull_name = tk.Entry(cr, bg=BG, fg=FG, font=FONT, insertbackground=FG, width=24, relief="flat", highlightthickness=1, highlightbackground=LINE)
+        self.pull_name.pack(side="left", padx=6)
+        tk.Label(cr, text="e.g. deepseek-r1:7b (overrides the list)", fg=DIM, bg=BG, font=FONT).pack(side="left")
+        br = tk.Frame(w, bg=BG); br.pack(fill="x", padx=12, pady=(8, 0))
+        self.dl_btn = btn(br, "[ DOWNLOAD ]", self.pull); self.dl_btn.pack(side="left")
+        self.cancel_btn = btn(br, "[ CANCEL ]", self.cancel_pull, fg=WARN); self.cancel_btn.pack(side="left", padx=6)
+        st = ttk.Style(w); st.configure("R.Horizontal.TProgressbar", troughcolor=BG, background=FG, bordercolor=LINE, lightcolor=FG, darkcolor=FG)
+        self.dl_bar = ttk.Progressbar(w, style="R.Horizontal.TProgressbar", maximum=100, mode="determinate"); self.dl_bar.pack(fill="x", padx=12, pady=(6, 0))
+        self.dl_state = L("", fg=DIM); self.dl_state.pack(fill="x", padx=12)
+        L("INSTALLED LOCAL MODELS").pack(fill="x", padx=12, pady=(10, 0))
+        lf = tk.Frame(w, bg=BG); lf.pack(fill="both", expand=True, padx=12)
+        self.inst = tk.Listbox(lf, bg=BG, fg=FG, font=FONT, height=6, selectbackground=FG, selectforeground=BG, highlightthickness=1,
+                               highlightbackground=LINE, relief="flat", activestyle="none")
+        self.inst.pack(side="left", fill="both", expand=True)
+        side = tk.Frame(lf, bg=BG); side.pack(side="left", fill="y", padx=6)
+        btn(side, "[ DELETE ]", self.delete_model, fg=WARN).pack(fill="x"); btn(side, "[ REFRESH ]", self.load_installed).pack(fill="x", pady=4)
+        self.pull_cancel = None; self.dl_note(); self.load_installed()
+
+    def toggle_howto(self):
+        self.how_open = not self.how_open
+        if self.how_open: self.how_lbl.pack(fill="x", padx=12, pady=(4, 0), after=self.how_btn)
+        else: self.how_lbl.pack_forget()
+        self.how_btn.config(text=("\u25be" if self.how_open else "\u25b8") + " HOW TO (step by step)")
+
+    def dl_note(self):
+        import modelhub
+        i = self.dl_pick.current()
+        if i < 0: return
+        name, size, ram, role, note = modelhub.CATALOG[i]; f = modelhub.fit(ram, self.ram)
+        use = "VISION model" if role == "vision" else "TEXT / PLANNER model" if role == "text" else "TEXT or VISION model"
+        self.dl_info.config(text=f"{note}. After downloading, pick it as the {use} in MODELS." +
+                            ("  Too big for this computer's RAM." if f == "too big" else "  Close other big apps while using it." if f == "tight" else ""),
+                            fg=WARN if f == "too big" else DIM)
+
+    def load_installed(self):
+        import modelhub
+        def work():
+            got = modelhub.installed(self.cfg["ollama"]["host"])
+            def show():
+                if not self.win.winfo_exists(): return
+                self.inst.delete(0, "end")
+                if got is None: self.inst.insert("end", "Ollama isn't running - open the Ollama app, then REFRESH."); return
+                for n, gb in got: self.inst.insert("end", f"{n:<28} {gb:>5.1f} GB")
+                if not got: self.inst.insert("end", "(none yet)")
+            self.ui(show)
+        threading.Thread(target=work, daemon=True).start()
+
+    def delete_model(self):
+        import modelhub
+        sel = self.inst.curselection()
+        if not sel: self.dl_state.config(text="select an installed model first", fg=WARN); return
+        name = self.inst.get(sel[0]).split()[0]
+        if ":" not in name and name.startswith(("(", "Ollama")): return
+        inuse = name in (self.cfg["ollama"].get("text_model"), self.cfg["ollama"].get("model"))
+        if not retro_confirm(self.win, f"Delete {name} from this computer?" + (" It is currently selected in MODELS." if inuse else "")): return
+        def work():
+            try:
+                modelhub.delete(self.cfg["ollama"]["host"], name)
+                self.ui(lambda: (self.dl_state.config(text=f"deleted {name}", fg=FG), self.load_installed(), self.load_models()))
+            except Exception as e:
+                self.ui(lambda: self.dl_state.config(text=f"delete failed: {e}", fg=WARN))
+        threading.Thread(target=work, daemon=True).start()
+
+    def cancel_pull(self):
+        if self.pull_cancel: self.pull_cancel.set(); self.dl_state.config(text="cancelling...", fg=DIM)
+
     def pull(self):
+        import modelhub
+        name = self.pull_name.get().strip() or modelhub.name_from_label(self.dl_pick.get())
+        if not name: self.dl_state.config(text="pick a model or type a name, e.g. llama3.2:3b", fg=WARN); return
+        if self.pull_cancel and not self.pull_cancel.is_set(): self.dl_state.config(text="a download is already running", fg=WARN); return
+        self.pull_cancel = ev = threading.Event(); self.dl_bar["value"] = 0
+        self.dl_state.config(text=f"downloading {name} ...", fg=DIM)
+        def prog(status, done, total):
+            pct = int(done * 100 / total) if total else None
+            t = f"downloading {name}: {pct:3d}%  {done/1e9:.2f} / {total/1e9:.2f} GB" if total else f"{name}: {status}"
+            self.ui(lambda: (self.dl_state.config(text=t, fg=DIM), self.dl_bar.configure(value=pct) if pct is not None else None))
+        def work():
+            try:
+                modelhub.pull(self.cfg["ollama"]["host"], name, prog, cancel=ev)
+                self.ui(lambda: (self.dl_bar.configure(value=100), self.dl_state.config(text=f"{name} is ready - choose it in MODELS and SAVE.", fg=FG),
+                                 self.load_installed(), self.load_models()))
+            except modelhub.Cancelled:
+                self.ui(lambda: self.dl_state.config(text=f"cancelled {name} (downloaded parts are kept; DOWNLOAD resumes)", fg=WARN))
+            except Exception as e:
+                self.ui(lambda: self.dl_state.config(text=f"download failed: {e}", fg=WARN))
+            finally:
+                ev.set()
+        threading.Thread(target=work, daemon=True).start()
+
+    def _old_pull(self):
         import llm
         name = self.pull_name.get().strip()
         if not name: self.pull_state.config(text="type a model name, e.g. llama3.2:3b", fg=WARN); return

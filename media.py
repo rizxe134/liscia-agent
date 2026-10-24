@@ -164,3 +164,54 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         agent.last_played = {"url": best_played[2], "title": best_played[1]}
         return f"Couldn't find an exact match for \"{q}\"; playing the closest: \"{best_played[1]}\"."
     return f"stopped: couldn't find \"{q}\" on YouTube (tried: " + "; ".join(t or "?" for t in tried) + ")."
+
+
+# 2.3.0: "the 5th video you see" is a position on the page, not a title
+_ORDW = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "last": -1}
+ORDINAL_RE = re.compile(r"\b(?:the\s+)?(\d{1,2})(?:st|nd|rd|th)\b|\b(?:the\s+)?(" + "|".join(_ORDW) + r")\b", re.I)
+
+def ordinal_pick(task):
+    """(n, topic) for '... the 5th video (you see|on the page|for X)'; None when the task names a title."""
+    t = task or ""
+    if not re.search(r"\b(video|result|one|clip|song|thing|item|link)s?\b", t, re.I): return None
+    m = ORDINAL_RE.search(t)
+    if not m or not re.search(ORDINAL_RE.pattern + r"\s+(?:\w+\s+)?(?:video|result|one|clip|song|thing|item|link)", t, re.I): return None
+    n = int(m.group(1)) if m.group(1) else _ORDW[m.group(2).lower()]
+    topic = ""
+    tm = re.search(r"\b(?:video|result|one|clip|song)s?\s+(?:for|about|of|on)\s+(?!youtube\b|the (?:page|screen|home ?page)\b)(.+?)(?:\s+on youtube)?\s*[.?!]*$", t, re.I)
+    if tm: topic = tm.group(1).strip()
+    return n, topic
+
+def youtube_nth(agent, link, n, topic, logf, sleep=time.sleep, nav=None):
+    import webagent
+    nav = nav or (lambda url: webagent.nav(link, url, agent.log))
+    url = ("https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(topic)) if topic else "https://www.youtube.com/"
+    nav(url); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}, "nth": n}) + "\n")
+    res = []
+    for i in range(8):
+        sleep(1.0)
+        res = [r for r in results(link) if not JUNK.match((r.get("title") or "").strip()) and "/shorts/" not in (r.get("href") or "")]
+        if n == -1 and res or len(res) >= n: break
+        if i >= 2:
+            try: link.call("scroll", timeout=12, direction="down", wait_lazy=True)
+            except extlink.ExtError: pass
+    if not res or (n > 0 and len(res) < n): return f"stopped: I could only see {len(res)} videos on that YouTube page, not {n}."
+    r = res[n - 1] if n > 0 else res[-1]
+    agent.log(f"[media] video #{n}: \"{(r.get('title') or '')[:70]}\"")
+    nav(clean(r["href"]) if r.get("href") else url)
+    if not r.get("href"): link.call("click", timeout=25, id=r["id"])
+    try:
+        import ads; ads.handle(link, getattr(agent, "cfg", None) if isinstance(getattr(agent, "cfg", None), dict) else {}, logf, agent.log, sleep)
+    except Exception: pass
+    st = {}
+    for _ in range(8):
+        sleep(1.0)
+        try: st = state(link)
+        except extlink.ExtError: continue
+        if st.get("title"): break
+    if st.get("paused"):
+        try: link.call("media_control", timeout=10, op="play")
+        except extlink.ExtError: pass
+    title = st.get("title") or r.get("title"); agent.last_played = {"url": st.get("url") or r.get("href"), "title": title}
+    where = f"the results for \"{topic}\"" if topic else "the YouTube home page"
+    return f"Playing video #{n if n > 0 else len(res)} from {where}: \"{title}\"" + (f" by {st['channel']}" if st.get("channel") else "") + "."
