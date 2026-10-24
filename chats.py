@@ -121,7 +121,7 @@ class ChatStore:
         c = self.get(cid) or {"messages": []}
         metas = [m["task"] for m in reversed(c["messages"]) if m.get("task")]
         last = metas[0] if metas else None
-        if last and not last.get("query"):  # 2.1.1: the most recent task that actually named something
+        if last and not last.get("query") and last.get("intent") not in ("desktop_app", "open_site", "web_interact"):  # 2.1.1 (not across app/site tasks): the most recent named item
             q = next((x for x in metas if x.get("query")), None)
             if q: last = dict(last, query=q["query"], site=last.get("site") or q.get("site", ""))
         played = next((x.get("played") for x in metas if x.get("played")), None)

@@ -352,14 +352,15 @@ class Agent:
         import webagent
         link = self.link(); intents.note_app("Google Chrome"); self.focus_chrome()
         fixed, rest = intents.plan(task) if self.cfg["agent"].get("intents", True) else ([], task)
-        done = []
+        done = []; opened = 0
+        new_tabs = bool(re.search(r"\b(?:another|a new|new|separate|second|other)\s+tab\b", task, re.I))
         for act in fixed:
             if self.kill.killed: return "stopped by user"
             if act["action"] == "open_app":
                 if act["app"] in intents.BROWSERS_SET: done.append("open Google Chrome (done)"); continue
                 rest = " and ".join([f"open {act['app']}"] + ([rest] if rest else [])); raise NeedsVision("non-browser app in task")
             if act["action"] == "open_url":
-                res = webagent.nav(link, act["url"], self.log)
+                res = webagent.nav(link, act["url"], self.log, new_tab=new_tabs and opened > 0); opened += 1
                 self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
             elif act["action"] == "answer_from_page":
                 logf.write(json.dumps({"web_fast": act}) + "\n")
@@ -500,6 +501,9 @@ class Agent:
         self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
                                "app": pl.get("app") or "", "result": ""}
         def finish(result):
+            if result == "max steps reached":  # 2.2.1: never show the bare cap message
+                result = ("stopped: I used all my steps without finishing \"" + task[:80] + "\". I couldn't tell from the screen how to "
+                          "complete it - try naming the exact site, button or app, or do the last step yourself and I'll continue.")
             self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
                                    "app": pl.get("app") or "", "result": str(result)[:300]}
             if getattr(self, "last_played", None): self.last_task_meta["played"] = self.last_played

@@ -3,7 +3,7 @@
 # Usage: scripts/build_mac_dmg.sh   -> dist/Liscia-Agent-<ver>-macos-arm64.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VER="${VERSION:-2.2.0}"
+VER="${VERSION:-2.2.1}"
 PY="${PYTHON:-python3}"
 [ -d build/venv ] || "$PY" -m venv build/venv
 build/venv/bin/pip install -q -r requirements.txt pyinstaller

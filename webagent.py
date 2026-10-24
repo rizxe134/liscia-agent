@@ -31,6 +31,14 @@ If what you want is not in the list, use find or scroll down - NEVER reply done 
 ACTS = {"answer", "read_page", "find", "type", "press", "select", "scroll", "hover", "navigate", "new_tab", "switch_tab", "close_tab", "back",
         "wait_for", "extract_text", "done", "vision", "click"}
 
+def give_up_message(task, history, snap):
+    """Plain words instead of 'max steps reached': what it tried, where it stopped, what to try next."""
+    tried = [h.split(": ", 1)[-1] for h in history[-4:] if h.startswith("web")]
+    where = (snap or {}).get("title") or (snap or {}).get("url") or "the page"
+    return ("stopped: I tried for a while but couldn't finish this in Chrome. I stopped on \"" + str(where)[:80] + "\"" +
+            (" after: " + "; ".join(t[:60] for t in tried) if tried else "") +
+            ". You can rephrase it (e.g. name the site or what to click), or ask me a question about that page.")
+
 def parse(raw):
     s = raw[raw.index("{"): raw.rindex("}") + 1] if "{" in (raw or "") else ""
     try: a = json.loads(s)
@@ -201,7 +209,9 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     from core import LoopGuard
     guard = LoopGuard(2, 3, 5); bad = 0; notes = []; scrolls = 0; no_change = 0
     import intents
-    if info is None: info = intents.is_question(task)
+    if info is None:
+        _p = getattr(agent, "plan_info", None)
+        info = intents.is_question(task) or (isinstance(_p, dict) and _p.get("intent") == "web_answer")
     if info: max_steps = min(max_steps, agent.cfg.get("agent", {}).get("info_max_steps", 8))
     seen = {}; dead_urls = set(); read = ""; rejected_done = 0
     # 2.1.1: the resolved query is the single source of truth for the goal (never an older query or text from the page)
@@ -249,6 +259,14 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         shown = {k: v for k, v in act.items() if k not in ("action", "thought")}
         el = next((e for e in snap.get("elements") or [] if str(e.get("id")) == str(act.get("id"))), None)
         target = f" \"{el['label'][:50]}\"" if el else ""
+        if act["action"] in ("click", "type", "select", "hover") and el is None:  # 2.2.1: invented ids ("search_result_1") never run
+            valid = ", ".join(f"[{e.get('id')}] {str(e.get('label') or '')[:30]}" for e in (snap.get("elements") or [])[:25])
+            bad += 1; entry["error"] = f"unknown id {act.get('id')!r}"; logf.write(json.dumps(entry) + "\n")
+            history.append(f"web{step}: {act['action']} id={act.get('id')!r} -> REJECTED: that id is not on the page")
+            notes.append(f"id {act.get('id')!r} does not exist. Use ONLY these ids from CURRENT PAGE: {valid}")
+            agent.log(f"[web{step}] rejected made-up id {act.get('id')!r}")
+            if bad >= 6: break
+            continue
         agent.log(f"[web{step}] {act['action']}{target} {json.dumps(shown)} ({entry['secs']}s)")
         if act["action"] == "done" and scrolls < MIN_SCROLLS and NOT_FOUND.search(str(act.get("summary", "")) + " " + str(act.get("thought", ""))) \
                 and not (snap.get("scroll") or [0, 1])[1] <= (snap.get("scroll") or [0, 0])[0]:
@@ -352,6 +370,8 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             res = nav(link, args["url"], agent.log, new_tab=act["action"] == "new_tab") if act["action"] in ("navigate", "new_tab") \
                 else link.call(act["action"], timeout=25, **args)
             entry["result"] = res
+            if res is None and act["action"] in ("click", "type", "select"):  # 2.2.1: no result = it didn't happen
+                raise extlink.ExtError("the page did not respond to this action")
         except extlink.ExtError as e:
             history.append(f"web{step}: {json.dumps(shown)}{target} -> FAILED: {e}")
             agent.log(f"   failed: {e}"); logf.write(json.dumps(entry) + "\n")
@@ -390,4 +410,9 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         except Exception as e:
             agent.log(f"[web] final answer failed: {e}")
         return "I couldn't find a clear answer in time."
-    return "max steps reached"
+    try:  # 2.2.1: out of steps - answer from what's on the page if the task is a question/list, else explain plainly
+        if intents.is_question(task) or re.search(r"\btop\s+\d+|\blist\b|\bmost\b|\bbest\b", task, re.I):
+            ans = agent.answer_question(link, task, logf, max_pages=1)
+            if isinstance(ans, str) and ans and not ans.startswith("I searched but"): return ans
+    except Exception: pass
+    return give_up_message(task, history, snap)

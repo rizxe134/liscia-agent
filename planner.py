@@ -240,6 +240,16 @@ def validate(p, task):
         p["query"] = verbatim(task, p["query"])
     if p["intent"] in ("media_play", "web_answer", "web_interact", "open_site") and p.get("query"):
         p["query"] = intents.strip_filler(p["query"]) or p["query"]  # never search for "me a song by the name of X"
+    # 2.2.1: a browser is never a site or a query - it's the browser preference
+    BR = r"(?:google\s+)?chrome|safari|(?:microsoft\s+)?edge|firefox|brave|opera|chromium|(?:the\s+|a\s+)?(?:web\s+)?browser"
+    if re.fullmatch(r"\s*(?:" + BR + r")\s*", p.get("site") or "", re.I): p["site"] = ""
+    if p.get("query"):
+        p["query"] = re.sub(r"\s*\b(?:on|in|with|using)\s+(?:" + BR + r")\b\s*", " ", p["query"], flags=re.I).strip()
+        if re.fullmatch(r"\s*(?:" + BR + r")\s*", p["query"], re.I): p["query"] = ""
+    # 2.2.1: questions and lists ("top 10 X", "most powerful ...") are answered from the results, not just opened
+    if p["intent"] == "open_site" and not p.get("site") and p.get("query") and \
+            (intents.is_question(t) or re.search(r"\b(top\s+\d+|most|best|biggest|largest|richest|strongest|list of|ranking|article)\b", p["query"] + " " + t, re.I)):
+        p["intent"] = "web_answer"
     p["source"] = p.get("source", "model"); p.pop("sure", None)
     return p
 

@@ -12,6 +12,20 @@ RETRY = re.compile(r"\b(wrong (song|video|one|track|thing)|not (that|the right|t
                    r"try (it )?again|again please|another (one|version)|different (one|song|version|video)|search (it|for it)( up)?|look (it|for it) up|"
                    r"find (it|the right one))\b", re.I)
 
+BROWSERS = r"(?:google\s+)?chrome|safari|(?:microsoft\s+)?edge|firefox|brave|opera|arc|(?:the\s+|a\s+|my\s+)?(?:web\s+)?browser|the web"
+BROWSER_REDO = re.compile(r"^\W*(?:(?:can|could|would|will) you\s+|please\s+|ok(?:ay)?\s+|now\s+|then\s+)*(?:do|try|open|run)\s+(?:it|that|this|them|those|that one)?\s*"
+                          r"(?:again\s+)?(?:on|in|with|using|through|via)\s+(" + BROWSERS + r")(?:\s+(?:instead|again|please))?\W*$", re.I)
+
+def browser_redo(task, ctx):
+    """'do it on google chrome' -> redo the most recent task in that browser (a browser is never a site or a query)."""
+    last = (ctx or {}).get("last") or {}
+    m = BROWSER_REDO.match(task or "")
+    if not m or not last.get("task"): return None
+    b = re.sub(r"^(the|a|my)\s+", "", m.group(1).strip().lower())
+    b = "Google Chrome" if "chrome" in b or "browser" in b or "web" in b else b.title()
+    prev = re.sub(r"\s+(?:on|in|with|using)\s+(?:" + BROWSERS + r")\s*$", "", last["task"].strip(), flags=re.I)
+    return f"{prev} in {b}", f"\"{task.strip()}\" = redo \"{last['task']}\" in {b}"
+
 def is_retry(task, ctx):
     """'thats the wrong song' / 'try again and search it up' right after a media task -> redo it (deterministically)."""
     last = (ctx or {}).get("last") or {}
@@ -38,6 +52,8 @@ def resolve(task, ctx):
     last = (ctx or {}).get("last") or {}
     if not last.get("task"): return task, None
     t = task.strip()
+    br = browser_redo(t, ctx)
+    if br: return br
     site = _site_hint(last)
     on_site = f" on {site}" if site in ("youtube", "spotify") and not SITE_WORDS.search(t) else ""
     m = CORRECTION.match(t)
