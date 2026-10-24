@@ -8,6 +8,23 @@ import intents
 CORRECTION = re.compile(r"^\W*(?:no+|nope|nah|wrong|not that(?: one)?|that's not it|thats not it|wait)?[\s,.!]*(?:i meant|i mean|i said|actually|rather|instead)\b[\s,:]*|"
                         r"^\W*(?:no+|nope|nah|not that(?: one)?|wrong one)[\s,.!]+(?=\S)", re.I)
 REF = re.compile(r"^(?:it|that|this|that one|this one|the song|the video|the track|the one|same|the same one|again|it again)$", re.I)
+RETRY = re.compile(r"\b(wrong (song|video|one|track|thing)|not (that|the right|the correct) (one|song|video|track)|that'?s not (it|the one|right)|"
+                   r"try (it )?again|again please|another (one|version)|different (one|song|version|video)|search (it|for it)( up)?|look (it|for it) up|"
+                   r"find (it|the right one))\b", re.I)
+
+def is_retry(task, ctx):
+    """'thats the wrong song' / 'try again and search it up' right after a media task -> redo it (deterministically)."""
+    last = (ctx or {}).get("last") or {}
+    return bool(RETRY.search(task or "") and last.get("query") and (last.get("intent") == "media_play" or (ctx or {}).get("media_before")))
+
+def retry_query(plan_query, ctx):
+    """The single source of truth for a retry: the planner's query only if it is a refinement of the most recent requested
+    item (e.g. 'pursuit' -> 'Shirobon Pursuit'); otherwise the most recent requested item itself (never an older one)."""
+    last_q = ((ctx or {}).get("last") or {}).get("query") or ""
+    pq = intents.strip_filler(plan_query or "") or ""
+    lt, pt = set(intents.query_tokens(last_q)), set(intents.query_tokens(pq))
+    return pq if pq and lt and lt <= pt and len(pt) <= len(lt) + 3 else last_q
+
 SITE_WORDS = re.compile(r"\b(youtube|spotify|google|chrome|safari|website)\b", re.I)
 
 def _site_hint(last):

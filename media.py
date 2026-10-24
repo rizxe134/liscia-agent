@@ -9,6 +9,8 @@ OK = 0.5      # half the tokens (e.g. the title without the artist): "closest ma
 
 _CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
 
+JUNK = re.compile(r"^(true|false|now playing|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
+
 def vid(href):
     return (urllib.parse.parse_qs(urllib.parse.urlparse(href or "").query).get("v") or [""])[0]
 
@@ -52,11 +54,13 @@ def results(link):
                 xv = vid(x.get("href"))
                 if xv and xv != v: break
                 if _CH.search(x.get("href") or "") and (x.get("label") or "").strip(): ch = x["label"].strip(); break
+            lab = (e.get("label") or "").strip()
             if v in seen:  # same video via thumbnail/title/duration links: keep the best label, add the channel
                 r = seen[v]
                 if ch and not r["channel"]: r["channel"] = ch
+                if lab and not JUNK.match(lab) and (JUNK.match(r["title"]) or len(lab) > len(r["title"])): r["title"] = lab; r["id"] = e["id"]
                 continue
-            if len(e.get("label") or "") > 3:
+            if len(lab) > 3 or (lab and not JUNK.match(lab)):
                 seen[v] = {"id": e["id"], "title": e["label"], "href": h, "channel": ch}; res.append(seen[v])
         return res
 
@@ -72,19 +76,22 @@ def state(link):
                    if _CH.search(x.get("href") or "") and (x.get("label") or "").strip()), "") if "/watch" in (s.get("url") or "") else ""
         return {"url": s.get("url"), "title": re.sub(r"^\(\d+\)\s*", "", (s.get("title") or "").replace(" - YouTube", "")), "channel": ch, "paused": None}
 
-def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries=3):
+def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries=3, exclude=None):
     """Returns a plain-words result: 'Playing "<title>" on YouTube.' or an honest closest/failure message."""
     import webagent
     nav = nav or (lambda url: webagent.nav(link, url, agent.log))
     q = intents.strip_filler(query) or query
+    excl = {vid(u) for u in (exclude or []) if vid(u)}
+    agent.last_played = None
     # already playing the right thing? keep it
     try:
         cur = state(link)
-        if "youtube.com/watch" in (cur.get("url") or "") and intents.title_match(q, cur.get("title", "") + " " + cur.get("channel", "")) >= GOOD:
+        if "youtube.com/watch" in (cur.get("url") or "") and vid(cur.get("url")) not in excl and intents.title_match(q, cur.get("title", "") + " " + cur.get("channel", "")) >= GOOD:
             if cur.get("paused"):
                 try: link.call("media_control", timeout=10, op="play")
                 except extlink.ExtError: pass
             logf.write(json.dumps({"media": "already_playing", "title": cur.get("title")}) + "\n")
+            agent.last_played = {"url": cur.get("url"), "title": cur.get("title")}
             return f"Playing \"{cur.get('title')}\"" + (f" by {cur['channel']}" if cur.get("channel") else "") + " on YouTube (it was already open)."
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
@@ -96,6 +103,7 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         sleep(1.0); res = results(link)
         if res: break
     if not res: return f"stopped: YouTube showed no results for \"{q}\"."
+    res = [r for r in res if vid(r.get("href")) not in excl and not JUNK.match((r.get("title") or "").strip())] or res
     ranked = rank(q, res)
     for _ in range(3):  # lazy-loaded results: look further down before settling for a weak match
         if ranked and ranked[0][1] >= GOOD: break
@@ -103,7 +111,7 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         except extlink.ExtError: break
         sleep(0.8); more = results(link)
         if len(more) <= len(res) and not [x for x in more if x not in res]: continue
-        res = more; ranked = rank(q, res)
+        res = [r for r in more if vid(r.get("href")) not in excl and not JUNK.match((r.get("title") or "").strip())] or more; ranked = rank(q, res)
     logf.write(json.dumps({"media_candidates": [{"score": s, "title": r.get("title"), "kind": r.get("kind")} for s, _, r in ranked[:6]]}) + "\n")
     tried, best_played = [], None
     for score, match, r in ranked[:max_tries]:
@@ -126,9 +134,11 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
             except extlink.ExtError: pass
         logf.write(json.dumps({"media_verify": {"title": st.get("title"), "channel": st.get("channel"), "match": got, "paused": st.get("paused")}}) + "\n")
         if got >= GOOD:
+            agent.last_played = {"url": st.get("url") or r.get("href"), "title": st.get("title")}
             return f"Playing \"{st.get('title')}\"" + (f" by {st['channel']}" if st.get("channel") else "") + " on YouTube."
         if best_played is None or got > best_played[0]: best_played = (got, st.get("title"), st.get("url") or r.get("href"))
     if best_played and best_played[0] >= OK:
         if tried and best_played[1] != st.get("title") and best_played[2]: nav(best_played[2]); sleep(1.0)
+        agent.last_played = {"url": best_played[2], "title": best_played[1]}
         return f"Couldn't find an exact match for \"{q}\"; playing the closest: \"{best_played[1]}\"."
     return f"stopped: couldn't find \"{q}\" on YouTube (tried: " + "; ".join(t or "?" for t in tried) + ")."

@@ -119,8 +119,14 @@ class ChatStore:
     def context(self, cid, n=6):
         """What a follow-up needs: the last few turns and the last task (its query/site/result)."""
         c = self.get(cid) or {"messages": []}
-        last = next((m["task"] for m in reversed(c["messages"]) if m.get("task")), None)
-        return {"turns": self.history(cid, n), "last": last}
+        metas = [m["task"] for m in reversed(c["messages"]) if m.get("task")]
+        last = metas[0] if metas else None
+        if last and not last.get("query"):  # 2.1.1: the most recent task that actually named something
+            q = next((x for x in metas if x.get("query")), None)
+            if q: last = dict(last, query=q["query"], site=last.get("site") or q.get("site", ""))
+        played = next((x.get("played") for x in metas if x.get("played")), None)
+        return {"turns": self.history(cid, n), "last": last, "played": played,
+                "media_before": any(x.get("intent") == "media_play" for x in metas)}
 
     def migrate(self, old_messages):
         """Move a pre-2.0 single conversation into the first chat (once)."""

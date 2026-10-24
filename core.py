@@ -361,7 +361,7 @@ class Agent:
                 return f"Searched YouTube for \"{q}\". Say \"play it\" and I'll play the best match."
             return "done: " + "; ".join(done)
         history += [f"(already done) {d}" for d in done]
-        return webagent.run_web(self, rest or task, history, logf, link=link, max_steps=self.cfg["agent"].get("max_steps", 40))
+        return webagent.run_web(self, rest or task, history, logf, link=link, max_steps=min(20, self.cfg["agent"].get("max_steps", 40)))
 
     def wait_page_change(self, act, timeout=8.0):
         """Mark a sub-step done when the front tab's URL/title changes (AppleScript); else fixed wait."""
@@ -470,6 +470,7 @@ class Agent:
         def finish(result):
             self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
                                    "app": pl.get("app") or "", "result": str(result)[:300]}
+            if getattr(self, "last_played", None): self.last_task_meta["played"] = self.last_played
             self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
         if pl["intent"] == "account_summary":
             if not ext_ok:
@@ -481,13 +482,39 @@ class Agent:
             except Exception as e:
                 logf.write(json.dumps({"github_error": str(e)}) + "\n")
                 return finish(f"stopped: couldn't read your GitHub ({type(e).__name__}: {e})")
-        # 2.0.1: media_play with a query ALWAYS searches, picks the best-matching result and verifies what plays
-        if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" \
-                and re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I):
+        # 2.1.1: ONE deterministic media path. Any media_play with a query (first ask, follow-up, correction, retry) searches
+        # YouTube directly for the resolved query, picks the best title match and verifies it. The LLM web loop is never used for it.
+        self.last_played = None
+        excl = []
+        try:
+            import followups
+            if followups.is_retry(task, ctx):
+                q = followups.retry_query(pl.get("query"), ctx)
+                if re.search(r"\bwrong|not (that|the right|the correct)|that'?s not|another|different", task, re.I) and (ctx or {}).get("played"):
+                    excl = [ctx["played"].get("url")]
+                logf.write(json.dumps({"retry": {"query": q, "planner_query": pl.get("query"), "exclude": excl}}) + "\n")
+                self.log(f"[chat] retry of \"{q}\"" + (" (skipping the one I played)" if excl else ""))
+                pl = dict(pl, intent="media_play", query=q, site=pl.get("site") or (ctx.get("last") or {}).get("site") or "youtube")
+                self.plan_info = pl; self.last_task_meta.update(intent="media_play", query=q, site=pl["site"])
+        except Exception as e:
+            self.log(f"[chat] retry check skipped ({type(e).__name__})")
+        search_only = (re.search(r"\b(search|look(?:ing)? (?:for|up)|find)\b", task, re.I) and not re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I)
+                       and not excl and not (ctx or {}).get("media_before") and not (pl.get("intent") == "media_play" and followups.is_retry(task, ctx)))
+        if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" and not search_only:
             try:
                 import media
                 intents.note_app("Google Chrome"); self.focus_chrome()
-                return finish(media.youtube_play(self, self.link(), pl["query"], logf))
+                return finish(media.youtube_play(self, self.link(), pl["query"], logf, exclude=excl))
+            except Exception as e:
+                logf.write(json.dumps({"media_error": str(e)}) + "\n")
+                return finish(f"stopped: couldn't play \"{pl['query']}\" on YouTube ({type(e).__name__}: {e})")
+        if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" and search_only:
+            try:  # "look for X on youtube": the search page, deterministically (no LLM loop)
+                import webagent, urllib.parse
+                intents.note_app("Google Chrome"); self.focus_chrome()
+                url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(pl["query"])
+                webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}, "query": pl["query"]}) + "\n")
+                return finish(f"Searched YouTube for \"{pl['query']}\". Say \"play it\" and I'll play the best match.")
             except Exception as e:
                 logf.write(json.dumps({"media_error": str(e)}) + "\n")
                 return finish(f"stopped: couldn't play \"{pl['query']}\" on YouTube ({type(e).__name__}: {e})")

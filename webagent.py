@@ -204,6 +204,21 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     if info is None: info = intents.is_question(task)
     if info: max_steps = min(max_steps, agent.cfg.get("agent", {}).get("info_max_steps", 8))
     seen = {}; dead_urls = set(); read = ""; rejected_done = 0
+    # 2.1.1: the resolved query is the single source of truth for the goal (never an older query or text from the page)
+    _pi = getattr(agent, "plan_info", None); _pi = _pi if isinstance(_pi, dict) else {}
+    _ut = getattr(agent, "user_text", ""); _ut = _ut if isinstance(_ut, str) else ""
+    goal_q = str(_pi.get("query") or "").strip()
+    _stop = {"can", "you", "the", "and", "for", "try", "again", "search", "find", "play", "look", "please", "me", "it", "up", "on", "to", "a", "of",
+             "song", "songs", "video", "videos", "all", "some", "this", "that", "with", "from", "open", "go", "youtube", "google", "chrome"}
+    _words = lambda s: {t for t in intents.query_tokens(s) if t not in _stop and len(t) > 1}
+    user_words = _words(_ut + " " + task + " " + goal_q)
+    repeat_blocks = 0; replans = 0
+    def direct_url():
+        import urllib.parse
+        site = str(_pi.get("site") or "")
+        if goal_q and ("youtube" in site or "youtube." in str(snap.get("url") or "")):
+            return "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(goal_q)
+        return "https://www.google.com/search?q=" + urllib.parse.quote_plus(goal_q or task)
     plain_open = None
     if intents.is_plain_open(task): plain_open = intents.plan(task)[0][0]["url"]
     max_els = 40 if info else 70
@@ -213,7 +228,7 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         if creds.auth_page(snap):  # 2.1.0: never fill in sign-in / sign-up forms; the user signs in themselves
             logf.write(json.dumps({"step": step, "stopped": "auth_page", "url": snap.get("url")}) + "\n")
             agent.log(f"[web] sign-in page ({str(snap.get('url'))[:70]}) - asking you to sign in yourself"); return creds.sign_in_message(snap)
-        prompt = (f"TODAY: {today()}\nTASK: {task}\n\nCURRENT PAGE:\n{format_snapshot(snap, max_els, task)}\n" +
+        prompt = (f"TODAY: {today()}\nTASK: {task}\n" + (f"GOAL QUERY (type exactly this when searching): {goal_q}\n" if goal_q else "") + "\nCURRENT PAGE:\n{format_snapshot(snap, max_els, task)}\n" +
                   (f"\nTEXT YOU READ:\n{read[:1800]}\n" if read else "") + "\nRecent actions (oldest first):\n" +
                   ("\n".join(history[-6:]) or "(none)") + "\n" + "".join(f"WARNING: {n}\n" for n in notes) +
                   ("This is a QUESTION: read_page, then answer from the text (use the current year, not an old one).\n" if info else "") +
@@ -262,6 +277,13 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         sig = json.dumps({k: act.get(k) for k in ("action", "id", "text", "url", "key", "direction")}, sort_keys=True)
         if act["action"] != "scroll": seen[sig] = seen.get(sig, 0) + 1
         if seen.get(sig, 0) > 2 and act["action"] != "scroll":
+            repeat_blocks += 1
+            if repeat_blocks >= 3:  # 2.1.1 anti-drift: stop clicking around; start over from the direct search page
+                logf.write(json.dumps(dict(entry, blocked="repeat", replan=replans + 1)) + "\n")
+                if replans >= 1: return "stopped: I kept repeating the same actions without reaching the goal" + (f" (\"{goal_q}\")" if goal_q else "") + "."
+                replans += 1; repeat_blocks = 0; seen.clear(); history.append(f"web{step}: stuck -> restarted from the search page for {goal_q or task!r}")
+                agent.log(f"[web] stuck - restarting from the search page"); nav(link, direct_url(), agent.log); sleep(1.0)
+                snap = link.call("snapshot"); continue
             history.append(f"web{step}: {json.dumps(shown)} -> BLOCKED: you already did exactly this twice")
             notes.append("Do NOT repeat that action again. Choose something different" + (", or read_page and answer." if info else "."))
             logf.write(json.dumps(dict(entry, blocked="repeat")) + "\n"); continue
@@ -275,7 +297,13 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             history.append(f"web{step}: navigate {act['url']} -> BLOCKED: that URL returned 404 before; don't invent URLs, use search results")
             logf.write(json.dumps(dict(entry, blocked="404")) + "\n"); continue
         if act["action"] == "type":
-            why = creds.check_type(act.get("text"), getattr(agent, "user_text", "") or task, el)
+            why = creds.check_type(act.get("text"), _ut or task, el)
+            tw = _words(act.get("text") or "")
+            if not why and tw and user_words and not (tw & user_words):  # text lifted from the page / an older task
+                why = f"\"{str(act.get('text'))[:40]}\" isn't what you asked for" + (f" - search for \"{goal_q}\"" if goal_q else "")
+                logf.write(json.dumps(dict(entry, blocked="off_goal_text")) + "\n"); agent.log(f"[web{step}] BLOCKED: {why}")
+                history.append(f"web{step}: type {act.get('text')!r} -> BLOCKED: {why}")
+                notes.append(f"Only type the goal query{(' ' + repr(goal_q)) if goal_q else ''} or words from the user's message."); continue
             if why:
                 logf.write(json.dumps(dict(entry, blocked="credentials")) + "\n"); agent.log(f"[web{step}] BLOCKED: {why}")
                 if el and (el.get("itype") in ("password", "email") or creds.FIELD.search(el.get("label") or "")):

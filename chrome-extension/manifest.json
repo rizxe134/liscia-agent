@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Liscia Agent Panel",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Lets your local Liscia Agent see and control web pages in Chrome, plus a chat side panel.",
   "permissions": [
     "sidePanel",
