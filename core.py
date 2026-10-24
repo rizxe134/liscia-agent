@@ -485,13 +485,14 @@ class Agent:
         # 2.1.1: ONE deterministic media path. Any media_play with a query (first ask, follow-up, correction, retry) searches
         # YouTube directly for the resolved query, picks the best title match and verifies it. The LLM web loop is never used for it.
         self.last_played = None
-        excl = []
+        excl = []; retry = False
         try:
             import followups
             if followups.is_retry(task, ctx):
+                retry = True
                 q = followups.retry_query(pl.get("query"), ctx)
-                if re.search(r"\bwrong|not (that|the right|the correct)|that'?s not|another|different", task, re.I) and (ctx or {}).get("played"):
-                    excl = [ctx["played"].get("url")]
+                # a retry means what played wasn't right: skip everything already played for this request
+                excl = list((ctx or {}).get("played_chain") or ([ctx["played"].get("url")] if (ctx or {}).get("played") else []))
                 logf.write(json.dumps({"retry": {"query": q, "planner_query": pl.get("query"), "exclude": excl}}) + "\n")
                 self.log(f"[chat] retry of \"{q}\"" + (" (skipping the one I played)" if excl else ""))
                 pl = dict(pl, intent="media_play", query=q, site=pl.get("site") or (ctx.get("last") or {}).get("site") or "youtube")
@@ -504,7 +505,7 @@ class Agent:
             try:
                 import media
                 intents.note_app("Google Chrome"); self.focus_chrome()
-                return finish(media.youtube_play(self, self.link(), pl["query"], logf, exclude=excl))
+                return finish(media.youtube_play(self, self.link(), pl["query"], logf, exclude=excl if retry else None))
             except Exception as e:
                 logf.write(json.dumps({"media_error": str(e)}) + "\n")
                 return finish(f"stopped: couldn't play \"{pl['query']}\" on YouTube ({type(e).__name__}: {e})")

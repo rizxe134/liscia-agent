@@ -44,6 +44,22 @@ class ChatReplay(unittest.TestCase):
         self.assertIn("https://www.youtube.com/results?search_query=Shirobon+Pursuit", navs)
         self.assertNotIn("https://www.youtube.com/watch?v=d", navs); self.assertFalse([c for c, a in link.calls if c in ("type", "click")])
 
+    def test_live_sequence_retry_skips_everything_already_played(self):
+        global VIDS
+        old = VIDS
+        VIDS = [{"title": "Phoenix Wright Ace Attorney OST - Pressing Pursuit ~ Cornered", "channel": "Gyakuten", "href": "https://www.youtube.com/watch?v=p"},
+                {"title": "ISQ - PURSUIT (VIZUALIZER)", "channel": "isq", "href": "https://www.youtube.com/watch?v=i"},
+                {"title": "Shirobon - Pursuit | Just Shapes & Beats", "channel": "ShirobonMusic", "href": "https://www.youtube.com/watch?v=a"},
+                {"title": "Mix", "href": "https://www.youtube.com/watch?v=m&list=RDm"}, {"title": "19 videos", "href": "https://www.youtube.com/watch?v=q&list=PL1"}]
+        MODEL_PLANS["can you try again and try to search it up"]["query"] = "Pursuit"
+        try:
+            out, link = self.run_chat()
+        finally:
+            VIDS = old; MODEL_PLANS["can you try again and try to search it up"]["query"] = "Shirobon Pursuit"
+        urls = [u for _, u in out[1:]]
+        self.assertEqual(len(set(urls)), 3, out)  # every retry plays something new
+        self.assertNotIn("https://www.youtube.com/watch?v=m&list=RDm", urls); self.assertNotIn("https://www.youtube.com/watch?v=q&list=PL1", urls)
+
 class Resolver(unittest.TestCase):
     CTX = {"last": {"task": "thats the wrong song", "intent": "media_play", "query": "pursuit", "site": ""}, "media_before": True,
            "played": {"url": "https://www.youtube.com/watch?v=a"}}

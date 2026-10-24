@@ -125,7 +125,12 @@ class ChatStore:
             q = next((x for x in metas if x.get("query")), None)
             if q: last = dict(last, query=q["query"], site=last.get("site") or q.get("site", ""))
         played = next((x.get("played") for x in metas if x.get("played")), None)
-        return {"turns": self.history(cid, n), "last": last, "played": played,
+        chain = []  # everything played for the current request (consecutive media tasks about the same thing)
+        lq = set(re.findall(r"\w+", ((last or {}).get("query") or "").lower()))
+        for x in metas:
+            if x.get("intent") != "media_play" or (lq and not (lq & set(re.findall(r"\w+", (x.get("query") or "").lower())))): break
+            if x.get("played", {}).get("url"): chain.append(x["played"]["url"])
+        return {"turns": self.history(cid, n), "last": last, "played": played, "played_chain": chain,
                 "media_before": any(x.get("intent") == "media_play" for x in metas)}
 
     def migrate(self, old_messages):

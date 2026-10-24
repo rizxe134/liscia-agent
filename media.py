@@ -9,7 +9,7 @@ OK = 0.5      # half the tokens (e.g. the title without the artist): "closest ma
 
 _CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
 
-JUNK = re.compile(r"^(true|false|now playing|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
+JUNK = re.compile(r"^(true|false|now playing|mix|\d+ videos|play all|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
 
 def vid(href):
     return (urllib.parse.parse_qs(urllib.parse.urlparse(href or "").query).get("v") or [""])[0]
@@ -43,7 +43,7 @@ def results(link):
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
     if True:
-        snap = link.call("snapshot")  # older extension: fall back to the page's /watch links
+        snap = link.call("snapshot", max=300)  # older extension: fall back to the page's /watch links
         res, seen = [], {}
         els = snap.get("elements") or []
         for i, e in enumerate(els):
@@ -83,8 +83,9 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
     q = intents.strip_filler(query) or query
     excl = {vid(u) for u in (exclude or []) if vid(u)}
     agent.last_played = None
-    # already playing the right thing? keep it
+    # already playing the right thing? keep it (not on a retry: the user just said it wasn't right)
     try:
+        if exclude is not None: raise extlink.ExtError("retry: always search again")
         cur = state(link)
         if "youtube.com/watch" in (cur.get("url") or "") and vid(cur.get("url")) not in excl and intents.title_match(q, cur.get("title", "") + " " + cur.get("channel", "")) >= GOOD:
             if cur.get("paused"):
