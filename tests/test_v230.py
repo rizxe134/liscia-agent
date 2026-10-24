@@ -104,3 +104,10 @@ class ExtReload(unittest.TestCase):
         L = extlink.ExtLink() if hasattr(extlink, "ExtLink") else extlink.LINK.__class__()
         out = L.poll({"version": "2.2.2"}, hold=0.01); self.assertEqual([c["cmd"] for c in out], ["reload_extension"])
         self.assertEqual(L.poll({"version": "2.2.2"}, hold=0.01), [])
+
+class LiveFixes231(unittest.TestCase):
+    def test_new_tab_clause_opens_unknown_site(self):
+        import intents
+        with mock.patch.object(intents, "GUESS_CHECK", False):
+            fixed, rest = intents.plan("can you open up github on a new tab then in a new tab open up xbox")
+        self.assertEqual(rest, ""); self.assertEqual([a["url"] for a in fixed], ["https://github.com", "https://www.xbox.com"])

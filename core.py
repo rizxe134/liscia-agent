@@ -618,7 +618,8 @@ class Agent:
                 webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
                 question = q if (orig_task != task or len(first.split()) < 5 or followups.is_retry(orig_task, ctx)) else first
                 if q.lower() not in question.lower(): question = f"{question} ({q})"
-                ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or 0)
+                ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or intents.requested_count(q) or
+                                           (intents.requested_count(((ctx or {}).get("last") or {}).get("task", "")) if orig_task != task or len(first.split()) < 6 else 0) or 0)
                 if later:  # 2.3.0: "search X then open github in a new tab then xbox" - do the rest too
                     fixed, rest = intents.plan(later)
                     opened = []

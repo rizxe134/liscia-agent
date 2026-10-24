@@ -83,6 +83,9 @@ def is_plain_open(task):
 def match(part):
     """Return a list of actions for one clause, or None."""
     p = _clean(part)
+    TAB = r"\b(?:in|on|into)\s+(?:a\s+)?(?:new|another|separate|second|other)\s+tab\b"
+    tabbed = bool(re.search(TAB, p))  # 2.3.1: "in a new tab open up xbox" / "open xbox in a new tab" -> a website
+    if tabbed: p = re.sub(r"\s+", " ", re.sub(TAB, " ", p)).strip(" ,"); p = _clean(p)
     m = re.match(r"^(?:open|launch|start|switch to)\s+(?:the\s+)?(?:app\s+)?(.+?)(?:\s+app)?$", p)
     if m and m.group(1) in APP_NAMES:
         return [{"action": "open_app", "app": APP_NAMES[m.group(1)]}]
@@ -92,7 +95,7 @@ def match(part):
         name, br = m.group(1), m.group(2)
         browser = BROWSER_NAMES.get(br.strip()) if br else None
         webby = bool(br and (browser or br.strip() in ("browser", "internet", "web"))) or bool(re.match(r"^(?:go to|visit|navigate to|take me to|go on)\b", p)) \
-            or bool(re.search(r"\b(?:website|site|homepage|home page)\b", p))
+            or bool(re.search(r"\b(?:website|site|homepage|home page)\b", p)) or tabbed
         url = SITES.get(name.replace(".com", "")) or (("https://" + name) if re.match(r"^[a-z0-9\-]+\.[a-z.]{2,}$", name) else None)
         if not url and webby and name not in APP_NAMES and re.match(r"^[a-z0-9\-]{2,40}$", name):
             url = guess_site(name)  # "open hulu in the browser" -> https://www.hulu.com (verified) or a lucky Google hit
