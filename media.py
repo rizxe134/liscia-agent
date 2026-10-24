@@ -9,7 +9,7 @@ OK = 0.5      # half the tokens (e.g. the title without the artist): "closest ma
 
 _CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
 
-VARIANT = re.compile(r"\b(slowed|sped ?up|reverb|nightcore|8d|bass ?boosted|1 hour|loop|edit|remix|cover|karaoke|instrumental)\b", re.I)
+VARIANT = re.compile(r"\b(slowed|sped ?up|reverb|nightcore|8d|bass ?boosted|1 hour|loop|edit|remix|cover|karaoke|instrumental|extended|full album)\b", re.I)
 JUNK = re.compile(r"^(true|false|now playing|mix|\d+ videos|play all|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
 
 def vid(href):
