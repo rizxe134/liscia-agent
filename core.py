@@ -456,6 +456,11 @@ class Agent:
                 if why: self.log(f"[plan] {why}"); logf.write(json.dumps({"app_first": why}) + "\n")
         except Exception as e:
             self.log(f"[plan] app-first check skipped ({type(e).__name__})")
+        try:  # 2.1.0: "summarize my github" = the website with the user's own Chrome sign-in (not GitHub Desktop)
+            import accounts
+            if accounts.wants_summary(task):
+                pl = dict(pl, intent="account_summary", site="github", app="", query="github", source="rules (account summary)")
+        except Exception: pass
         self.plan_info = pl
         logf.write(json.dumps({"plan": pl, "secs": round(time.time() - t_plan, 1)}) + "\n")
         self.log(f"[plan] {pl['intent']}" + (f" -> {', '.join(pl['outputs'])}" if pl["outputs"] else "") + (f" | {pl['query']}" if pl.get("query") else "") +
@@ -466,6 +471,16 @@ class Agent:
             self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
                                    "app": pl.get("app") or "", "result": str(result)[:300]}
             self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+        if pl["intent"] == "account_summary":
+            if not ext_ok:
+                return finish("stopped: this needs the Chrome extension to read GitHub. Open Chrome with the Liscia Agent panel, then ask again.")
+            try:
+                import accounts
+                intents.note_app("Google Chrome"); self.focus_chrome()
+                return finish(accounts.github_summary(self, self.link(), task, logf))
+            except Exception as e:
+                logf.write(json.dumps({"github_error": str(e)}) + "\n")
+                return finish(f"stopped: couldn't read your GitHub ({type(e).__name__}: {e})")
         # 2.0.1: media_play with a query ALWAYS searches, picks the best-matching result and verifies what plays
         if pl["intent"] == "media_play" and pl.get("query") and ext_ok and (pl.get("site") or "youtube") == "youtube" \
                 and re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I):
@@ -821,6 +836,13 @@ class Agent:
                 el_text = ""
                 if act["action"] in ("click_element", "type_element") and snap:
                     el_text = next((e.get("text", "") for e in snap.get("elements", []) if str(e.get("id")) == str(act.get("id"))), "")
+                if act["action"] in ("type", "type_element"):  # 2.1.0: never type invented credentials (vision loop too)
+                    import creds
+                    why = creds.check_type(act.get("text"), getattr(self, "user_text", "") or orig_task, {"label": el_text})
+                    if why:
+                        self.log(f"!! BLOCKED: {why}"); entry["blocked"] = "credentials"; logf.write(json.dumps(entry) + "\n")
+                        result = ("stopped: this needs a sign-in. I don't type emails, usernames or passwords for you - please sign in "
+                                  "yourself, then ask me again."); break
                 if s_cfg.get("confirm_risky", True) and (is_risky(act, s_cfg.get("risky_words", [])) or policy.risky(act, el_text)):
                     shown = dict(act); shown["text"] = "***" if act.get("sensitive") else act.get("text")
                     if not self.confirm(f"Agent wants to: {json.dumps(shown)}"):

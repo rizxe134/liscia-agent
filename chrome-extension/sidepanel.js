@@ -82,6 +82,7 @@ async function refreshStatus() {
   try {
     const r = await fetch(`${BASE}/status`, {headers: {"X-PCA-Token": token}}); if (!r.ok) return;
     const st = await r.json(), on = st.extension && st.extension.connected;
+    if (st.theme) applyTheme(st.theme);
     $("conn").textContent = on ? "[connected · page control ON]" : "[connected · page control OFF - reload the extension]";
   } catch (e) {}
 }
@@ -103,3 +104,11 @@ $("newchat").onclick = async () => {
   try { const r = await post("/chats/new"); if (r.error) line("busy - press STOP first, or wait.", "warn"); else loadChat(true); }
   catch (e) { line("can't reach Liscia Agent: " + e.message, "err"); }
 };
+
+// 2.1.0: follow the app's theme + font size (Settings > Themes)
+function applyTheme(t) {
+  const s = document.documentElement.style;
+  for (const k of ["bg", "fg", "dim", "user", "warn"]) if (t[k]) s.setProperty("--" + k, t[k]);
+  if (t.step) s.setProperty("--step", t.step);
+  if (t.size) document.body.style.fontSize = Math.max(11, t.size) + "px";
+}

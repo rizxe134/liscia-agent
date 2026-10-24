@@ -2,8 +2,47 @@
 import os, threading, queue, tkinter as tk
 from core import Agent, route
 
-BG, FG, DIM, USER, WARN = "#000000", "#00ff66", "#00994d", "#b3ffcc", "#ffcc00"
-FONT = ("Consolas", 11)
+import themes
+BG, FG, DIM, USER, WARN = "#000000", "#3dff8f", "#9fe8c0", "#ffffff", "#ffd23f"
+STEP, LINE = "#c2f5d8", "#2e7d55"
+FONT = ("Consolas", themes.DEFAULT_SIZE)
+PAL = dict(themes.THEMES[themes.DEFAULT])
+
+def set_palette(p):
+    """Module colours used when widgets are created (2.1.0 themes)."""
+    global BG, FG, DIM, USER, WARN, STEP, LINE, PAL
+    BG, FG, DIM, USER, WARN, STEP, LINE = (p[k] for k in themes.KEYS[:1] + ("fg", "dim", "user", "warn", "step", "line"))
+    PAL = dict(p)
+
+COLOR_OPTS = ("bg", "fg", "highlightbackground", "highlightcolor", "activebackground", "activeforeground", "selectbackground",
+              "selectforeground", "insertbackground", "selectcolor", "disabledforeground", "troughcolor")
+
+def recolor(widget, old, new, size):
+    """Live theme switch: map every colour of the old palette to the new one, resize fonts, recursively."""
+    cmap = {}
+    for k in themes.KEYS:
+        if old.get(k): cmap.setdefault(old[k].lower(), new[k])
+    stack = [widget]
+    while stack:
+        w = stack.pop(); stack.extend(w.winfo_children())
+        for opt in (() if getattr(w, "_fixed", False) else COLOR_OPTS):
+            try:
+                v = str(w.cget(opt)).lower()
+                if v in cmap: w.configure(**{opt: cmap[v]})
+            except tk.TclError: pass
+        try:
+            f = w.tk.splitlist(w.cget("font"))
+            if len(f) >= 2: w.configure(font=(f[0], size) + tuple(f[2:]))
+        except tk.TclError: pass
+        if isinstance(w, tk.Text):
+            for t in w.tag_names():
+                for opt in ("foreground", "background"):
+                    v = str(w.tag_cget(t, opt)).lower()
+                    if v in cmap: w.tag_config(t, **{opt: cmap[v]})
+                tf = w.tag_cget(t, "font")
+                if tf:
+                    f = w.tk.splitlist(tf)
+                    if len(f) >= 2: w.tag_config(t, font=(f[0], size) + tuple(f[2:]))
 
 def pick_font(root):
     """Use the first installed monospace font (Consolas on Windows)."""
@@ -12,8 +51,8 @@ def pick_font(root):
     fams = set(tkfont.families(root))
     for f in ("SF Mono", "Menlo", "Monaco", "Consolas", "Cascadia Mono", "Lucida Console", "IBM Plex Mono", "DejaVu Sans Mono", "Liberation Mono", "Courier New"):
         if f in fams:
-            FONT = (f, 11); return
-    FONT = ("TkFixedFont", 11)
+            FONT = (f, FONT[1]); return
+    FONT = ("TkFixedFont", FONT[1])
 SPIN = ["[=     ]", "[ =    ]", "[  =   ]", "[   =  ]", "[    = ]", "[     =]", "[    = ]", "[   =  ]", "[  =   ]", "[ =    ]"]
 
 def retro_confirm(root, msg):
@@ -35,9 +74,14 @@ def retro_confirm(root, msg):
 
 from chats import plain_result
 
+def style_tabs(st):
+    st.configure("R.TNotebook", background=BG, borderwidth=0)
+    st.configure("R.TNotebook.Tab", background=BG, foreground=DIM, font=FONT, padding=(10, 4), bordercolor=LINE)
+    st.map("R.TNotebook.Tab", background=[("selected", FG)], foreground=[("selected", BG)])
+
 def btn(parent, text, cmd, fg=None):
     return tk.Button(parent, text=text, command=cmd, fg=fg or FG, bg=BG, font=FONT, relief="flat", activebackground=fg or FG,
-                     activeforeground=BG, highlightbackground=DIM, highlightthickness=1, cursor="hand2")
+                     activeforeground=BG, highlightbackground=LINE, highlightthickness=1, cursor="hand2")
 
 def retro_prompt(root, title, initial=""):
     win = tk.Toplevel(root, bg=BG, highlightbackground=FG, highlightthickness=2); win.title(title); win.transient(root)
@@ -57,14 +101,19 @@ class SettingsWindow:
         import providers, keystore, settings
         from tkinter import ttk
         self.app, self.cfg = app, app.cfg; settings.defaults(self.cfg)
-        w = self.win = tk.Toplevel(app.root, bg=BG, highlightbackground=FG, highlightthickness=2); w.title("SETTINGS"); w.geometry("680x640")
-        st = ttk.Style(w)
+        top = self.win = tk.Toplevel(app.root, bg=BG, highlightbackground=FG, highlightthickness=2); top.title("SETTINGS"); top.geometry("700x680")
+        st = ttk.Style(top)
         try: st.theme_use("clam")
         except Exception: pass
         st.configure("R.TCombobox", fieldbackground=BG, background=BG, foreground=FG, arrowcolor=FG, bordercolor=DIM)
         st.map("R.TCombobox", fieldbackground=[("readonly", BG)], foreground=[("readonly", FG)])
-        w.option_add("*TCombobox*Listbox.background", BG); w.option_add("*TCombobox*Listbox.foreground", FG)
-        w.option_add("*TCombobox*Listbox.selectBackground", FG); w.option_add("*TCombobox*Listbox.selectForeground", BG)
+        style_tabs(st)
+        nb = self.nb = ttk.Notebook(top, style="R.TNotebook"); nb.pack(fill="both", expand=True, padx=6, pady=6)
+        w = tk.Frame(nb, bg=BG); nb.add(w, text=" MODELS ")
+        self.theme_tab = tk.Frame(nb, bg=BG); nb.add(self.theme_tab, text=" THEMES ")
+        self.build_themes(self.theme_tab)
+        top.option_add("*TCombobox*Listbox.background", BG); top.option_add("*TCombobox*Listbox.foreground", FG)
+        top.option_add("*TCombobox*Listbox.selectBackground", FG); top.option_add("*TCombobox*Listbox.selectForeground", BG)
         L = lambda t, fg=FG, bold=False, **k: tk.Label(w, text=t, fg=fg, bg=BG, font=FONT + (("bold",) if bold else ()), anchor="w", justify="left", **k)
         L("> SETTINGS", bold=True).pack(fill="x", padx=12, pady=(10, 6))
         L("PROVIDER").pack(fill="x", padx=12)
@@ -78,7 +127,7 @@ class SettingsWindow:
         self.key_frame = tk.Frame(w, bg=BG); self.key_frame.pack(fill="x", padx=12, pady=4)
         self.key_lbl = tk.Label(self.key_frame, text="API KEY", fg=FG, bg=BG, font=FONT); self.key_lbl.pack(side="left")
         self.key = tk.Entry(self.key_frame, show="\u2022", bg=BG, fg=FG, font=FONT, insertbackground=FG, width=30, relief="flat",
-                            highlightthickness=1, highlightbackground=DIM)
+                            highlightthickness=1, highlightbackground=LINE)
         self.key.pack(side="left", padx=6)
         btn(self.key_frame, "[ SAVE KEY ]", self.save_key).pack(side="left", padx=2)
         btn(self.key_frame, "[ REMOVE ]", self.remove_key, fg=WARN).pack(side="left", padx=2)
@@ -94,7 +143,7 @@ class SettingsWindow:
         # ollama pull
         self.pull_frame = tk.Frame(w, bg=BG); self.pull_frame.pack(fill="x", padx=12, pady=(10, 0))
         tk.Label(self.pull_frame, text="PULL A LOCAL MODEL", fg=FG, bg=BG, font=FONT).pack(side="left")
-        self.pull_name = tk.Entry(self.pull_frame, bg=BG, fg=FG, font=FONT, insertbackground=FG, width=22, relief="flat", highlightthickness=1, highlightbackground=DIM)
+        self.pull_name = tk.Entry(self.pull_frame, bg=BG, fg=FG, font=FONT, insertbackground=FG, width=22, relief="flat", highlightthickness=1, highlightbackground=LINE)
         self.pull_name.pack(side="left", padx=6); btn(self.pull_frame, "[ PULL ]", self.pull).pack(side="left")
         self.pull_state = L("", fg=DIM); self.pull_state.pack(fill="x", padx=12)
         self.fb = tk.BooleanVar(value=self.cfg["provider"].get("fallback_local", True))
@@ -102,11 +151,37 @@ class SettingsWindow:
                        activebackground=BG, activeforeground=FG, font=FONT, highlightthickness=0).pack(fill="x", padx=12, pady=(8, 0))
         self.msg = L("", fg=DIM, wraplength=640); self.msg.pack(fill="x", padx=12, pady=4)
         bar = tk.Frame(w, bg=BG); bar.pack(side="bottom", pady=10)
-        btn(bar, "[ SAVE ]", self.save).pack(side="left", padx=6); btn(bar, "[ CLOSE ]", w.destroy).pack(side="left", padx=6)
-        w.bind("<Escape>", lambda e: w.destroy())
+        btn(bar, "[ SAVE ]", self.save).pack(side="left", padx=6); btn(bar, "[ CLOSE ]", top.destroy).pack(side="left", padx=6)
+        top.bind("<Escape>", lambda e: top.destroy())
         self.on_provider()
 
     def ui(self, f): self.app.root.after(0, f)
+
+    def build_themes(self, w):
+        name, size = themes.get(self.app.cfg)
+        tk.Label(w, text="> THEME", fg=FG, bg=BG, font=FONT + ("bold",), anchor="w").pack(fill="x", padx=12, pady=(10, 4))
+        self.theme = tk.StringVar(value=name)
+        for k, t in themes.THEMES.items():
+            row = tk.Frame(w, bg=BG); row.pack(fill="x", padx=12, pady=2)
+            tk.Radiobutton(row, text=t["name"], value=k, variable=self.theme, command=self.on_theme, fg=FG, bg=BG, selectcolor=BG,
+                           activebackground=BG, activeforeground=FG, font=FONT, highlightthickness=0, width=16, anchor="w").pack(side="left")
+            sw = tk.Label(row, text=" AGENT > reply   :: step ", bg=t["bg"], fg=t["fg"], font=FONT, padx=6)  # fixed preview swatch
+            sw.pack(side="left"); sw._fixed = True
+        tk.Label(w, text="> FONT SIZE", fg=FG, bg=BG, font=FONT + ("bold",), anchor="w").pack(fill="x", padx=12, pady=(14, 0))
+        self.size = tk.Scale(w, from_=themes.SIZES[0], to=themes.SIZES[1], orient="horizontal", command=lambda v: self.on_theme(),
+                             fg=FG, bg=BG, troughcolor=LINE, highlightthickness=0, font=FONT, length=360, activebackground=FG)
+        self.size.set(size); self.size.pack(anchor="w", padx=12)
+        self.theme_msg = tk.Label(w, text="Changes apply right away and are saved to config.yaml.", fg=DIM, bg=BG, font=FONT, anchor="w")
+        self.theme_msg.pack(fill="x", padx=12, pady=8)
+
+    def on_theme(self):
+        name, size = self.theme.get(), int(self.size.get())
+        if (name, size) == themes.get(self.app.cfg): return
+        self.app.apply_theme(name, size)
+        try:
+            import settings; settings.save(self.app.cfg)
+        except Exception as e:
+            self.theme_msg.config(text=f"couldn't save: {e}", fg=WARN)
 
     def on_provider(self):
         import providers, keystore
@@ -213,10 +288,12 @@ class ChatApp:
         self.store = store or chats.store(); self.chat_ids = []
         self.store.listeners.append(lambda what, cid: self.q.put(("chats_changed", (what, cid))))
         r = self.root = root or tk.Tk()
+        global FONT
+        name, size = themes.get(cfg); set_palette(themes.THEMES[name]); FONT = (FONT[0], size)
         pick_font(r)
         r.title("LISCIA AGENT"); r.configure(bg=BG); r.geometry("980x580")
         # ---- sidebar: chats ----
-        side = tk.Frame(r, bg=BG, highlightthickness=1, highlightbackground=DIM, width=220); side.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        side = tk.Frame(r, bg=BG, highlightthickness=1, highlightbackground=LINE, width=220); side.pack(side="left", fill="y", padx=(8, 0), pady=8)
         side.pack_propagate(False)
         btn(side, "[ + NEW CHAT ]", self.new_chat).pack(fill="x", padx=6, pady=(6, 4))
         tk.Label(side, text="CHATS", fg=DIM, bg=BG, font=FONT, anchor="w").pack(fill="x", padx=6)
@@ -237,16 +314,20 @@ class ChatApp:
         btn(top, "[ \u2699 SETTINGS ]", self.open_settings).pack(side="right", padx=6)
         self.model_lbl = tk.Label(main, text="", fg=DIM, bg=BG, font=FONT, anchor="w"); self.model_lbl.pack(fill="x", padx=8)
         self.log = tk.Text(main, bg=BG, fg=FG, font=FONT, wrap="word", relief="flat", insertbackground=FG,
-                           highlightthickness=1, highlightbackground=DIM, padx=8, pady=6, height=10)
-        for tag, col in (("user", USER), ("agent", FG), ("step", DIM), ("warn", WARN), ("sys", DIM)):
+                           highlightthickness=1, highlightbackground=LINE, padx=8, pady=6, height=10)
+        for tag, col in (("user", USER), ("agent", FG), ("step", STEP), ("warn", WARN), ("sys", DIM), ("hdr", DIM)):
             self.log.tag_config(tag, foreground=col)
+        self.log.tag_config("agent", spacing1=4, spacing3=6, font=FONT + ("bold",)); self.log.tag_config("user", spacing1=8)
+        self.log.tag_config("hdr", underline=True); self.log.tag_bind("hdr", "<Enter>", lambda e: self.log.config(cursor="hand2"))
+        self.log.tag_bind("hdr", "<Leave>", lambda e: self.log.config(cursor="xterm"))
+        self.grp = None; self.grp_n = 0
         self.log.config(state="disabled")
         self.status = tk.Label(main, text="", fg=DIM, bg=BG, font=FONT, anchor="w"); self.status.pack(fill="x", padx=8)
         bottom = tk.Frame(main, bg=BG); bottom.pack(fill="x", padx=8, pady=(0, 8))
         tk.Label(bottom, text="$>", fg=FG, bg=BG, font=FONT + ("bold",)).pack(side="left")
         self.entry = tk.Entry(bottom, bg=BG, fg=FG, font=FONT, relief="flat", insertbackground=FG,
                               insertwidth=9, insertontime=500, insertofftime=500,  # blinking block cursor
-                              highlightthickness=1, highlightbackground=DIM, highlightcolor=FG)
+                              highlightthickness=1, highlightbackground=LINE, highlightcolor=FG)
         self.entry.pack(side="left", fill="x", expand=True, padx=6, ipady=4)
         self.entry.bind("<Return>", lambda e: self.send()); self.entry.focus_set()
         self.log.pack(fill="both", expand=True, padx=8, pady=6, before=self.status)  # packed last so input row always shows
@@ -373,10 +454,49 @@ class ChatApp:
         except Exception as e:
             self.q.put(("warn", f"could not preload models: {e}"))
 
+    STEPS_OPEN = False  # step logs start collapsed under a "▸ N steps" toggle
+
     def write(self, tag, text):
         prefix = {"user": "YOU   > ", "agent": "AGENT > ", "step": "   ::  ", "warn": "  !!   ", "sys": ""}[tag]
-        self.log.config(state="normal"); self.log.insert("end", prefix + text + "\n", tag)
+        self.log.config(state="normal")
+        if tag == "step":
+            if self.grp is None:  # first step of this task: add the toggle line
+                self.grp_n += 1; self.grp = g = f"grp{self.grp_n}"; self.grp_count = 0
+                self.log.tag_config(g, elide=not self.STEPS_OPEN)
+                self.log.insert("end", "\u25b8 steps\n", ("hdr", f"h{g}"))
+                self.log.tag_bind(f"h{g}", "<Button-1>", lambda e, g=g: self.toggle_steps(g))
+            self.grp_count += 1; self._set_hdr(self.grp, self.grp_count)
+            self.log.insert("end", prefix + text + "\n", (tag, self.grp))
+        else:
+            if tag in ("agent", "user"): self.grp = None
+            self.log.insert("end", prefix + text + "\n", tag)
         self.log.see("end"); self.log.config(state="disabled")
+
+    def _set_hdr(self, g, n):
+        r = self.log.tag_ranges(f"h{g}")
+        if not r: return
+        opened = not int(self.log.tag_cget(g, "elide") or 0)
+        arrow = "\u25be" if opened else "\u25b8"
+        txt = f"{arrow} {n} step{'s' if n != 1 else ''}" + ("" if opened else "  (click to show)")
+        st = self.log.index(r[0]); self.log.delete(r[0], f"{r[1]} -1c"); self.log.insert(st, txt, ("hdr", f"h{g}"))
+        self.log._counts = getattr(self.log, "_counts", {}); self.log._counts[g] = n
+
+    def toggle_steps(self, g):
+        self.log.config(state="normal")
+        self.log.tag_config(g, elide=not int(self.log.tag_cget(g, "elide") or 0))
+        self._set_hdr(g, self.log._counts.get(g, 0)); self.log.config(state="disabled")
+
+    def apply_theme(self, name, size):
+        """Live: recolour every open window, resize fonts, push the palette to the Chrome side panel (via /status)."""
+        global FONT
+        old = dict(PAL); new = themes.set_theme(self.cfg, name, size)
+        recolor(self.root, old, new, new["size"]); set_palette(new); FONT = (FONT[0], new["size"])
+        try:
+            from tkinter import ttk
+            style_tabs(ttk.Style(self.root))
+            ttk.Style(self.root).configure("R.TCombobox", fieldbackground=BG, background=BG, foreground=FG, arrowcolor=FG, bordercolor=LINE)
+        except Exception: pass
+        self.root.configure(bg=BG)
 
     def _tick(self):
         while not self.q.empty():

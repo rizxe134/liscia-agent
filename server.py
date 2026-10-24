@@ -178,7 +178,7 @@ def make_handler(bridge):
                                         "panel_clients": len(bridge.hub.subs)})
             if u.path == "/status":
                 return self._send(200, {"ok": True, "busy": bridge.busy, "panel_clients": len(bridge.hub.subs),
-                                        "extension": bridge.link.status()})
+                                        "extension": bridge.link.status(), "theme": __import__("themes").palette(bridge.cfg)})
             if u.path == "/chats": return self._send(200, bridge.chats_info())
             if u.path == "/ext/poll":
                 info = {k: v[0] for k, v in qs.items() if k in ("version", "ua", "client")}

@@ -68,6 +68,8 @@ L.snapshot = (opts = {}) => {
       bbox: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)]};
     if ("value" in e && e.value && el.role !== "button") el.value = String(e.value).slice(0, 80);
     if (e.href) el.href = e.href.slice(0, 160);
+    if (e.tagName === "INPUT") { el.itype = (e.type || "text").toLowerCase(); if (e.name) el.name = e.name.slice(0, 40);
+      if (e.autocomplete) el.autocomplete = e.autocomplete.slice(0, 40); if (e.placeholder) el.placeholder = e.placeholder.slice(0, 60); }
     if (e.disabled) el.disabled = true;
     if (e.checked) el.checked = true;
     if (document.activeElement === e) el.focused = true;

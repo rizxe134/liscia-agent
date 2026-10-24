@@ -5,6 +5,8 @@ import extlink
 
 WEB_SYSTEM = """You control the user's Chrome browser through an extension. Each turn you get the TASK, the current page
 (URL, title, dialogs, a short text summary) and a numbered list of interactive ELEMENTS: [id] role "label" (value/href).
+NEVER invent or type emails, usernames, passwords or codes: if the page asks to sign in or sign up, reply done with "needs sign-in".
+If you could not do the task, say so plainly in done (never claim it was completed elsewhere).
 Reply with EXACTLY ONE JSON object: {"thought": "<max 20 words>", "action": "<name>", ...params}
 Actions:
   {"action":"click","id":"<id>"}                         click an element from the list
@@ -159,6 +161,7 @@ def risky_text(act, snap):
     el = next((e for e in snap.get("elements") or [] if str(e.get("id")) == str(act.get("id"))), {})
     return " ".join(str(x) for x in (act.get("thought", ""), el.get("label", ""), act.get("text", "") if act["action"] == "type" else ""))
 
+GAVE_UP = re.compile(r"\blikely\b|elsewhere|\bfailed\b|gave up|\bmaybe\b|\bprobably\b|not (?:sure|confirmed)", re.I)
 NOT_FOUND = re.compile(r"not (?:be )?found|n[o']t find|could ?n[o']t|cannot find|can't find|unable to|no (?:matching |such )?(?:result|video|item)s?|not (?:visible|available|on the page|listed)|doesn'?t (?:appear|exist)", re.I)
 MIN_SCROLLS = 5
 
@@ -204,8 +207,12 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
     plain_open = None
     if intents.is_plain_open(task): plain_open = intents.plan(task)[0][0]["url"]
     max_els = 40 if info else 70
+    import creds
     for step in range(1, max_steps + 1):
         if agent.kill.killed: return "stopped by user"
+        if creds.auth_page(snap):  # 2.1.0: never fill in sign-in / sign-up forms; the user signs in themselves
+            logf.write(json.dumps({"step": step, "stopped": "auth_page", "url": snap.get("url")}) + "\n")
+            agent.log(f"[web] sign-in page ({str(snap.get('url'))[:70]}) - asking you to sign in yourself"); return creds.sign_in_message(snap)
         prompt = (f"TODAY: {today()}\nTASK: {task}\n\nCURRENT PAGE:\n{format_snapshot(snap, max_els, task)}\n" +
                   (f"\nTEXT YOU READ:\n{read[:1800]}\n" if read else "") + "\nRecent actions (oldest first):\n" +
                   ("\n".join(history[-6:]) or "(none)") + "\n" + "".join(f"WARNING: {n}\n" for n in notes) +
@@ -241,6 +248,8 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
                 logf.write(json.dumps(dict(entry, rejected=why)) + "\n"); agent.log(f"[web{step}] not done: {why}"); continue
             logf.write(json.dumps(dict(entry, goal_check="ok" if ok else why)) + "\n")
             summ = act.get("summary", "done")
+            if ok and (NOT_FOUND.search(summ) or GAVE_UP.search(summ)):  # "done: X not found / likely completed elsewhere" is a failure
+                return f"stopped: {summ}"
             return summ if ok else f"stopped: couldn't confirm the goal ({why}). Last page: {snap.get('title') or snap.get('url')}"
         if act["action"] == "answer":
             logf.write(json.dumps(entry) + "\n"); return act["text"]
@@ -265,6 +274,14 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
         if act["action"] in ("navigate", "new_tab") and act["url"].rstrip("/") in dead_urls:
             history.append(f"web{step}: navigate {act['url']} -> BLOCKED: that URL returned 404 before; don't invent URLs, use search results")
             logf.write(json.dumps(dict(entry, blocked="404")) + "\n"); continue
+        if act["action"] == "type":
+            why = creds.check_type(act.get("text"), getattr(agent, "user_text", "") or task, el)
+            if why:
+                logf.write(json.dumps(dict(entry, blocked="credentials")) + "\n"); agent.log(f"[web{step}] BLOCKED: {why}")
+                if el and (el.get("itype") in ("password", "email") or creds.FIELD.search(el.get("label") or "")):
+                    return creds.sign_in_message(snap)
+                history.append(f"web{step}: type {act.get('text')!r} -> BLOCKED: {why}")
+                notes.append("NEVER invent emails, usernames, passwords or codes. Only type text from the user's message."); continue
         if money_click(act, el, task):
             if not agent.confirm(f"Agent wants to click \"{el.get('label','')[:60]}\" (sign-up / billing) on {snap.get('url','')[:80]}. Allow?"):
                 history.append(f"web{step}: click \"{el.get('label','')[:50]}\" -> DENIED: sign-up/billing pages are off-limits for this task")
