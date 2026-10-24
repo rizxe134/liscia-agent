@@ -79,6 +79,17 @@ class Ranking(unittest.TestCase):
             return {"elements": [{"id": "1", "label": "frog", "href": "https://www.youtube.com/watch?v=p"}, {"id": "2", "label": "ptasinski", "href": "https://www.youtube.com/@ptasinski"}]}
         link.call.side_effect = call
         self.assertEqual(media.results(link)[0]["channel"], "ptasinski")
+    def test_radio_link_plain_video_not_mix_and_clean_url(self):
+        h = "https://www.youtube.com/watch?v=RTDUbi0P0B8&list=RDRTDUbi0P0B8&start_radio=1"
+        r = media.rank("frog by ptasinski", [{"title": "Mix - frog", "href": h}, {"title": "frog", "channel": "ptasinski", "href": h}])
+        self.assertEqual(r[0][2]["kind"], "video"); self.assertGreaterEqual(r[0][1], media.GOOD)
+        self.assertEqual(media.clean(h), "https://www.youtube.com/watch?v=RTDUbi0P0B8")
+    def test_snapshot_dedupes_and_finds_far_channel(self):
+        link = mock.Mock(); h = "https://www.youtube.com/watch?v=A1&list=RDA1&start_radio=1"
+        els = [{"id": "1", "label": "frog 1 minute, 31 seconds", "href": h}, {"id": "2", "label": "frog", "href": h}] + \
+              [{"id": str(i), "label": "x", "href": ""} for i in range(3, 10)] + [{"id": "10", "label": "ptasinski", "href": "https://www.youtube.com/@ptasinski"}]
+        link.call.side_effect = lambda cmd, **a: {} if cmd == "video_results" else {"elements": els}
+        got = media.results(link); self.assertEqual(len(got), 1); self.assertEqual(got[0]["channel"], "ptasinski")
     def test_title_match_fuzzy(self):
         self.assertEqual(intents.title_match("frog by ptasinski", "Ptasiński – Frog"), 1.0)
         self.assertEqual(intents.title_match("frog by ptasinski", "Funny Song #9: The Name of my Frog"), 0.5)

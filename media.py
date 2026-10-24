@@ -7,16 +7,27 @@ import intents, extlink
 GOOD = 0.99   # every significant token matched
 OK = 0.5      # half the tokens (e.g. the title without the artist): "closest match"
 
+_CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
+
+def vid(href):
+    return (urllib.parse.parse_qs(urllib.parse.urlparse(href or "").query).get("v") or [""])[0]
+
+def clean(href):
+    """A /watch link without the radio/playlist tail, so the plain video plays (not 'Mix - ...')."""
+    v = vid(href)
+    return f"https://www.youtube.com/watch?v={v}" if v else href
+
 def rank(query, results):
     """Best first. Score = token match (title + channel) minus penalties for Mix/playlist/shorts."""
     out = []
     for i, r in enumerate(results):
         title, ch = r.get("title") or r.get("label") or "", r.get("channel") or ""
         s = max(intents.title_match(query, title), intents.title_match(query, f"{title} {ch}"))
-        kind = r.get("kind") or ("mix" if intents.MIX_RE.search(title) or "start_radio=1" in (r.get("href") or "") else
-                                 "playlist" if "list=" in (r.get("href") or "") else "video")
+        h = r.get("href") or ""
+        # YouTube adds &list=RD..&start_radio=1 to many plain videos; only the title/a /playlist link says it's a mix
+        kind = r.get("kind") or ("mix" if intents.MIX_RE.search(title) else "playlist" if "/playlist" in h else
+                                 "short" if "/shorts/" in h else "video")
         pen = {"mix": 0.35, "playlist": 0.3, "short": 0.15}.get(kind, 0.0)
-        if kind == "video" and intents.MIX_RE.search(title) and not intents.MIX_RE.search(query): pen += 0.2
         extra = max(0, len(re.findall(r"[\w']+", re.sub(r"\d+ (?:hours?|minutes?|seconds?)", "", title))) - len(intents.query_tokens(query)) - 2)
         pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)  # the plain track beats "Little cute video ... #tags"
         out.append((round(s - pen - i * 0.002, 4), s, dict(r, kind=kind)))
@@ -31,14 +42,22 @@ def results(link):
         if "not connected" in str(e): raise
     if True:
         snap = link.call("snapshot")  # older extension: fall back to the page's /watch links
-        res, seen = [], set()
+        res, seen = [], {}
         els = snap.get("elements") or []
         for i, e in enumerate(els):
-            h = e.get("href") or ""
-            if "/watch" in h and h not in seen and len(e.get("label") or "") > 3:
-                seen.add(h)
-                ch = next((x.get("label") for x in els[i + 1:i + 6] if re.search(r"youtube\.com/(@|channel/|c/|user/)", x.get("href") or "")), "")
-                res.append({"id": e["id"], "title": e["label"], "href": h, "channel": ch or ""})
+            h = e.get("href") or ""; v = vid(h)
+            if "/watch" not in h or not v: continue
+            ch = ""
+            for x in els[i + 1:i + 15]:  # the channel link follows the title, before the next video
+                xv = vid(x.get("href"))
+                if xv and xv != v: break
+                if _CH.search(x.get("href") or "") and (x.get("label") or "").strip(): ch = x["label"].strip(); break
+            if v in seen:  # same video via thumbnail/title/duration links: keep the best label, add the channel
+                r = seen[v]
+                if ch and not r["channel"]: r["channel"] = ch
+                continue
+            if len(e.get("label") or "") > 3:
+                seen[v] = {"id": e["id"], "title": e["label"], "href": h, "channel": ch}; res.append(seen[v])
         return res
 
 def state(link):
@@ -48,7 +67,10 @@ def state(link):
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
     if True:
-        s = link.call("snapshot"); return {"url": s.get("url"), "title": (s.get("title") or "").replace(" - YouTube", ""), "paused": None}
+        s = link.call("snapshot")
+        ch = next(((x.get("label") or "").strip() for x in (s.get("elements") or [])
+                   if _CH.search(x.get("href") or "") and (x.get("label") or "").strip()), "") if "/watch" in (s.get("url") or "") else ""
+        return {"url": s.get("url"), "title": re.sub(r"^\(\d+\)\s*", "", (s.get("title") or "").replace(" - YouTube", "")), "channel": ch, "paused": None}
 
 def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries=3):
     """Returns a plain-words result: 'Playing "<title>" on YouTube.' or an honest closest/failure message."""
@@ -88,7 +110,7 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
         if tried and match < OK: break  # don't wander off into unrelated videos
         tried.append(r.get("title"))
         agent.log(f"[media] trying \"{(r.get('title') or '')[:70]}\" (match {match:.0%}, {r.get('kind')})")
-        if r.get("href"): nav(r["href"])
+        if r.get("href"): nav(clean(r["href"]) if r.get("kind") == "video" else r["href"])
         else: link.call("click", timeout=25, id=r["id"])
         st = {}
         for _ in range(10):
@@ -97,6 +119,8 @@ def youtube_play(agent, link, query, logf, sleep=time.sleep, nav=None, max_tries
             except extlink.ExtError: continue
             if "youtube.com/watch" in (st.get("url") or "") and st.get("title"): break
         got = intents.title_match(q, (st.get("title") or "") + " " + (st.get("channel") or ""))
+        if vid(st.get("url")) and vid(st.get("url")) == vid(r.get("href")) and r.get("channel") and not st.get("channel"):
+            st["channel"] = r["channel"]; got = max(got, intents.title_match(q, f"{st.get('title') or ''} {r['channel']}"))
         if st.get("paused"):
             try: link.call("media_control", timeout=10, op="play"); st["paused"] = False
             except extlink.ExtError: pass
