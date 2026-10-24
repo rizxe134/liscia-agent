@@ -111,3 +111,18 @@ class LiveFixes231(unittest.TestCase):
         with mock.patch.object(intents, "GUESS_CHECK", False):
             fixed, rest = intents.plan("can you open up github on a new tab then in a new tab open up xbox")
         self.assertEqual(rest, ""); self.assertEqual([a["url"] for a in fixed], ["https://github.com", "https://www.xbox.com"])
+
+class ArticleFallback232(unittest.TestCase):
+    def test_article_words_stripped_and_results_fallback(self):
+        a = core.Agent.__new__(core.Agent); a.cfg = {"agent": {}}; a.log = lambda m: None
+        a._answer_from = mock.Mock(side_effect=["", "1. US"])
+        L = mock.Mock(); url = ["https://www.google.com/search?q=x"]
+        RES = {"url": "https://www.google.com/search?q=x", "elements": [{"id": "1", "role": "link", "label": "Military ranking 2026", "href": "https://a.com/rank"}]}
+        def call(cmd, **k):
+            if cmd == "snapshot": return RES if "google" in url[0] else {"url": url[0], "elements": []}
+            if cmd == "extract_text": return {"text": "page"}
+            if cmd == "navigate": url[0] = k["url"]
+            return {}
+        L.call.side_effect = call
+        with mock.patch("time.sleep"): r = a.answer_question(L, "top armies 2026 article", open(os.devnull, "w"), article=True, max_pages=1)
+        self.assertNotIn("article", a._answer_from.call_args_list[0][0][0]); self.assertTrue(r.startswith("1. US"), r)

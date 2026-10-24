@@ -248,6 +248,7 @@ class Agent:
         if not isinstance(getattr(self, "cfg", None), dict): self.cfg = {"agent": {}}
         limit = self.cfg.get("agent", {}).get("answer_chars", 7000)
         count = count or intents.requested_count(question) or 0
+        question = re.sub(r"\s*\b(?:an?\s+)?(?:article|articles|source|website|web ?page|blog post)s?\b(?:\s+(?:of|about|on))?", " ", question, flags=re.I).strip() or question
         best, results_snap, tried = "", None, set()
         for page in range(max_pages + (1 if article else 0)):
             try: snap = link.call("snapshot", max=80) or {}
@@ -269,6 +270,13 @@ class Agent:
             tried.add(nxt["href"])
             self.log(f"[web] opening the article \"{nxt['label'][:60]}\"")
             webagent.nav(link, nxt["href"], self.log); time.sleep(2.0)
+        if not best and article and results_snap is not None:  # 2.3.1: no article answered - fall back to the results page itself
+            try:
+                webagent.nav(link, results_snap.get("url"), self.log); time.sleep(1.5)
+                text = webagent.main_text(link, limit); ans = self._answer_from(question, text, results_snap.get("url", "")) if text else ""
+                logf.write(json.dumps({"answer_try": "results_fallback", "answer": ans[:500]}) + "\n")
+                if ans: best = ans + "\n\n(The articles I opened didn't state it clearly; this is from the search results.)"
+            except Exception: pass
         return best or "I searched but couldn't find a clear answer on the page."
 
     EXTRACT_SYSTEM = ("You turn web page text into a document. Today is {today}. Use ONLY facts in the text. Reply with ONE JSON object: "
