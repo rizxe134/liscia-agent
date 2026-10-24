@@ -12,8 +12,8 @@ class ChatReplay221(unittest.TestCase):
         t, note = followups.resolve("do it on google chrome", CTX)
         self.assertEqual(t, LINK_TASK + " in Google Chrome"); self.assertTrue(note)
         self.assertTrue(appfirst.explicit_web(t))
-        fixed, rest = intents.plan(intents.fix_typos(t))
-        self.assertEqual([a["url"] for a in fixed], ["https://www.linkedin.com", "https://www.instagram.com"])
+        fixed, rest = intents.plan(t)  # raw text, typos included (what core passes)
+        self.assertEqual(rest, ""); self.assertEqual([a["url"] for a in fixed], ["https://www.linkedin.com", "https://www.instagram.com"])
     def test_variants(self):
         for s in ["try it in chrome", "do it on the browser", "can you do that in chrome instead"]:
             self.assertTrue(followups.resolve(s, CTX)[0].endswith("in Google Chrome"), s)

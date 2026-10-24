@@ -285,6 +285,7 @@ def _yt(q):
 
 def plan(task):
     """Split a task into clauses. Returns (deterministic_actions, remaining_text or '')."""
+    task = fix_typos(task)  # 2.2.1: "open up linkden" must match linkedin here too, not only in the planner
     gq = google_request(task)
     if gq:  # deterministic Google search; questions are then answered from the results page
         import urllib.parse
