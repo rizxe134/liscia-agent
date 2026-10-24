@@ -135,7 +135,7 @@ class AutoSkipAds(unittest.TestCase):
         self.assertEqual(L.call.call_args_list[0].kwargs.get("mute"), True)
     def test_old_extension_clicks_skip_from_snapshot(self):
         import ads, extlink
-        L = mock.Mock(); snaps = iter([{"elements": [{"id": "7", "label": "Skip"}, {"id": "8", "label": "Ad · 0:12"}]}, {"elements": [{"id": "1", "label": "Like"}]}])
+        L = mock.Mock(); snaps = iter([{"elements": [{"id": "7", "label": "Skip"}, {"id": "8", "label": "Ad · 0:12"}]}, {"elements": [{"id": "1", "label": "Like"}]}, {"elements": [{"id": "1", "label": "Like"}]}])
         clicks = []
         def call(cmd, **a):
             if cmd == "ad_watch": raise extlink.ExtError("unknown command ad_watch")
@@ -144,6 +144,20 @@ class AutoSkipAds(unittest.TestCase):
         L.call.side_effect = call
         r = ads.handle(L, {}, None, lambda m: None, lambda s: None)
         self.assertEqual(clicks, ["7"]); self.assertEqual((r["skipped"], r["via"]), (1, "snapshot"))
+    def test_persistent_skip_label_is_not_an_ad(self):
+        import ads, extlink
+        L = mock.Mock(); clicks = []
+        def call(cmd, **a):
+            if cmd == "ad_watch": raise extlink.ExtError("unknown command ad_watch")
+            if cmd == "click": clicks.append(a["id"]); return {}
+            return {"elements": [{"id": "7", "label": "Skip", "bbox": [1, 1, 30, 20]}]}
+        L.call.side_effect = call
+        r = ads.handle(L, {}, None, lambda m: None, lambda s: None, max_wait=5)
+        self.assertEqual(r["skipped"], 0); self.assertLessEqual(len(clicks), 3)
+    def test_bold_unicode_slowed_is_a_variant(self):
+        r = media.rank("pursuit", [{"title": "\U0001d5fd\U0001d602\U0001d5ff\U0001d600\U0001d602\U0001d5f6\U0001d601 (\U0001d5e8\U0001d5df\U0001d5e7\U0001d5e5\U0001d5d4 \U0001d5e6\U0001d5df\U0001d5e2\U0001d5ea\U0001d5d8\U0001d5d7)", "href": "https://www.youtube.com/watch?v=s"},
+                                   {"title": "Shirobon - Pursuit", "href": "https://www.youtube.com/watch?v=a"}])
+        self.assertEqual(r[0][2]["href"], "https://www.youtube.com/watch?v=a")
     def test_setting_off(self):
         import ads
         L = mock.Mock(); r = ads.handle(L, {"media": {"auto_skip_ads": False}}, None)

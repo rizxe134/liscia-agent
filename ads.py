@@ -4,7 +4,11 @@ import json, re, time
 import extlink
 
 SKIP = re.compile(r"^\s*skip(\s+ads?)?\s*[>›»]?\s*$", re.I)
-AD_MARK = re.compile(r"^(ad|ads|sponsored)\b|\bad\s*[·•]|\bvisit advertiser\b|\bwhy this ad\b|\bmy ad center\b|^ad \d+ of \d+", re.I)
+AD_MARK = re.compile(r"^(ad|sponsored)\s*[·•]|\bvisit advertiser\b|^ad \d+ of \d+|^skip ad", re.I)
+
+def shown(x):
+    b = x.get("bbox") or [0, 0, 1, 1]
+    return len(b) < 4 or (b[2] > 0 and b[3] > 0)
 CLOSE = re.compile(r"^(close( ad)?|dismiss|no thanks)$", re.I)
 
 def settings(cfg):
@@ -27,18 +31,24 @@ def handle(link, cfg, logf=None, log=print, sleep=time.sleep, max_wait=60):
     except extlink.ExtError as e:
         if "not connected" in str(e): raise
         rep["via"] = "snapshot"  # older extension: no in-page watcher
+        stale = 0
         while time.time() - t0 < max_wait:
             try: snap = link.call("snapshot", max=150)
             except extlink.ExtError: break
             els = snap.get("elements") or []
-            skip = next((x for x in els if SKIP.match(x.get("label") or "")), None)
-            ad = skip is not None or any(AD_MARK.search(x.get("label") or "") for x in els)
+            skip = next((x for x in els if SKIP.match(x.get("label") or "") and shown(x) and not x.get("below")), None)
+            ad = skip is not None or any(AD_MARK.search(x.get("label") or "") and shown(x) for x in els)
             for x in els:
                 if CLOSE.match(x.get("label") or "") and re.search(r"ad|overlay|promo", json.dumps(x), re.I):
                     try: link.call("click", timeout=10, id=x["id"]); rep["closed"] += 1
                     except extlink.ExtError: pass
             if skip:
-                try: link.call("click", timeout=10, id=skip["id"]); rep["skipped"] += 1; log("[media] skipped an ad")
+                if stale >= 2: break  # the same "Skip" keeps showing after clicks: not an ad button
+                try:
+                    link.call("click", timeout=10, id=skip["id"]); sleep(0.8)
+                    after = link.call("snapshot", max=150).get("elements") or []
+                    if any(SKIP.match(x.get("label") or "") and shown(x) and not x.get("below") for x in after): stale += 1
+                    else: rep["skipped"] += 1; stale = 0; log("[media] skipped an ad")
                 except extlink.ExtError: pass
             if not ad: break
             rep["ad"] = True; sleep(1.0)

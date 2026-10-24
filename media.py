@@ -9,7 +9,7 @@ OK = 0.5      # half the tokens (e.g. the title without the artist): "closest ma
 
 _CH = re.compile(r"youtube\.com/(@|channel/|c/|user/)")
 
-VARIANT = re.compile(r"\b(slowed|sped ?up|reverb|nightcore|8d|bass ?boosted|1 hour|loop|edit|remix|cover|karaoke|instrumental)\b|\U0001d5fd", re.I)
+VARIANT = re.compile(r"\b(slowed|sped ?up|reverb|nightcore|8d|bass ?boosted|1 hour|loop|edit|remix|cover|karaoke|instrumental)\b", re.I)
 JUNK = re.compile(r"^(true|false|now playing|mix|\d+ videos|play all|\d+:\d+(:\d+)?( now playing)?|live|new|\d+ (seconds?|minutes?|hours?).*)$", re.I)
 
 def vid(href):
@@ -33,7 +33,8 @@ def rank(query, results):
         pen = {"mix": 0.35, "playlist": 0.3, "short": 0.15}.get(kind, 0.0)
         extra = max(0, len(re.findall(r"[\w']+", re.sub(r"\d+ (?:hours?|minutes?|seconds?)", "", title))) - len(intents.query_tokens(query)) - 2)
         pen += min(0.12, 0.012 * extra) + (0.05 if "#" in title else 0)
-        var = VARIANT.findall(title)
+        import unicodedata
+        var = VARIANT.findall(unicodedata.normalize("NFKC", title))
         if var and not VARIANT.search(query): pen += 0.08  # the original beats "(slowed)" / "sped up" / nightcore edits  # the plain track beats "Little cute video ... #tags"
         out.append((round(s - pen - i * 0.002, 4), s, dict(r, kind=kind)))
     out.sort(key=lambda x: x[0], reverse=True)
