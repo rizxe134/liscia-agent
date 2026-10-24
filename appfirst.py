@@ -70,6 +70,24 @@ def lookup(q, idx):
             if sorted(k) == sorted(q) or difflib.SequenceMatcher(None, q, k).ratio() >= 0.83: return e
     return None
 
+# 2.3.3: app names that are also everyday words. They only mean the app when the user says so ("open News", "the News app",
+# "in the Music app"), never as a topic ("find me the 4 different news", "the latest news").
+GENERIC_APPS = set("""news music photos photo mail maps notes calendar weather books stocks clock files messages reminders calculator
+settings store tv home contacts podcasts preview freeform shortcuts translate journal passwords camera phone facetime voice memos
+voice memos find my health fitness wallet terminal console activity monitor games game center image capture keychain access
+font book chess stickies dictionary automator mission control spaces time machine screenshot video videos movies paint
+photos app mail app""".split()) | {"voice memos", "find my", "app store", "game center", "activity monitor", "font book", "time machine"}
+SITE_OR_SEARCH = re.compile(r"\b(?:on|in|using|with|via|from)\s+(?:google|youtube|bing|duckduckgo|wikipedia|reddit|the internet|the web)\b|"
+                            r"\b(?:google|search|look up|search up|website|web ?site|online|internet)\b", re.I)
+
+def strong_ref(name, task):
+    """The user names the app AS an app: open/launch/start/quit/close <name>, '<name> app', 'in/on/using <name>' (brands only)."""
+    n = re.escape(appindex.norm(name)); t = re.sub(r"\s+", " ", intents.fix_typos(task or "").lower())
+    if re.search(rf"\b{n}\s+(?:app|application|desktop app)\b", t): return True
+    if re.search(rf"\b(?:open|launch|start|quit|close|switch to|focus|bring up|use|go to)\s+(?:up\s+)?(?:the\s+|my\s+)?(?:app\s+)?{n}\b", t): return True
+    if appindex.norm(name) not in GENERIC_APPS and re.search(rf"\b(?:in|on|using|with|from|via)\s+(?:the\s+|my\s+)?{n}\b", t): return True
+    return False
+
 def mention(task, idx=None, running=None):
     """The installed/running app a task names, e.g. 'can you pause the musiuc on spotify' -> ('Spotify', entry, running?)."""
     t = intents.fix_typos(task or "")
@@ -117,6 +135,11 @@ def override(plan, task, idx=None, running=None, is_command=None):
     m = mention(task, idx, running)
     if not m: return plan, None
     name, entry, running_now = m
+    strong = strong_ref(name, task)
+    if appindex.norm(name) in GENERIC_APPS and not strong:
+        return plan, None  # "find me the 4 different news" is about news, not the News app
+    if SITE_OR_SEARCH.search(intents.fix_typos(task or "")) and not strong and not is_command:
+        return plan, None  # a site or search engine is named ("on google ...", "search ...") -> stays a web task
     if explicit_web(task) and not (is_browser(name) and is_command): return plan, None
     if is_browser(name) and not is_command: return plan, None  # browsers stay web tasks, except media/window commands
     if plan.get("intent") == "web_answer" and not is_command and not running_now and not re.match(r"^\W*(?:\w+\W+){0,3}?(open|launch|start|use)\b", task or "", re.I):

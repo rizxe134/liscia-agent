@@ -401,7 +401,7 @@ class Agent:
                 if act["app"] in intents.BROWSERS_SET: done.append("open Google Chrome (done)"); continue
                 rest = " and ".join([f"open {act['app']}"] + ([rest] if rest else [])); raise NeedsVision("non-browser app in task")
             if act["action"] == "open_url":
-                res = webagent.nav(link, act["url"], self.log, new_tab=new_tabs and opened > 0); opened += 1
+                res = webagent.nav(link, act["url"], self.log, new_tab=new_tabs and (opened > 0 or getattr(self, "_multi_idx", 0) > 0)); opened += 1
                 self.log(f"[web] navigate {act['url']} -> {(res.get('title') or '')[:60]}")
             elif act["action"] == "answer_from_page":
                 logf.write(json.dumps({"web_fast": act}) + "\n")
@@ -478,10 +478,45 @@ class Agent:
         CURRENT = self; self._session_on = False
         if not self._injected_exec: self.agent_session(True)
         try:
+            if not getattr(self, "_in_multi", False):
+                try:  # 2.3.3: "you didn't do the rest" -> the unfinished steps of the previous request
+                    rest = followups.rest_of(task, getattr(self, "chat_ctx", None))
+                    if rest: self.log(f"[chat] doing the rest of the previous request: {rest}"); task = rest
+                except Exception as e:
+                    self.log(f"[chat] rest check skipped ({type(e).__name__})")
+                parts = intents.split_steps(task)
+                bare_open = re.match(r"^\W*(?:(?:ok(?:ay)?|can you|could you|please)\s+)*(?:open|launch|start|go to)\s+(?:up\s+)?(?:the\s+)?[\w.\-]+(?:\s+app)?\W*$", parts[0], re.I)
+                if len(parts) > 1 and not self._all_opens(task) and not (bare_open and len(parts) == 2):  # "open spotify then play X" = one task
+                    return self._run_multi(task, parts)
             return self._run(task)
         finally:
             if self._session_on: self.agent_session(False)
             if CURRENT is self: CURRENT = None
+
+    @staticmethod
+    def _all_opens(task):
+        try:
+            fixed, rest = intents.plan(task); return bool(fixed) and not rest
+        except Exception: return False
+
+    def _run_multi(self, task, parts):
+        """Each step is its own run (own plan, own intent); a failed step doesn't stop the others; the chat remembers which finished."""
+        self._in_multi = True; results, done = [], []
+        self.log(f"[multi] {len(parts)} steps: " + " | ".join(parts))
+        try:
+            for k, p in enumerate(parts):
+                self._multi_idx = k
+                r = self._run(p); results.append(str(r))
+                if not followups.FAILED_RE.match(str(r)): done.append(k)
+                if str(r).startswith("stopped by user") or getattr(self.kill, "killed", False): break
+        finally:
+            self._in_multi = False; self._multi_idx = 0
+        meta = dict(getattr(self, "last_task_meta", None) or {})
+        meta.update(task=task, parts=parts, done=done, result=" | ".join(r[:140] for r in results)[:300])
+        self.last_task_meta = meta
+        out = "\n\n".join(f"{k + 1}) {r}" for k, r in enumerate(results))
+        if len(results) < len(parts): out += f"\n\n(Stopped before: {'; '.join(parts[len(results):])})"
+        return out
 
     def _run(self, task):
         a_cfg, s_cfg = self.cfg["agent"], self.cfg["safety"]
@@ -623,9 +658,15 @@ class Agent:
                 first, later = split_followon(task)
                 q = pl["query"] or first
                 url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
+                news = bool(re.search(r"\b(news|headlines?|breaking)\b", q + " " + first, re.I))
+                if news: url += "&tbm=nws"  # 2.3.3: news results list the outlet and time for every story
                 webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
                 question = q if (orig_task != task or len(first.split()) < 5 or followups.is_retry(orig_task, ctx)) else first
                 if q.lower() not in question.lower(): question = f"{question} ({q})"
+                n_items = pl.get("count") or intents.requested_count(orig_task) or intents.requested_count(q) or 0
+                if n_items:  # 2.3.3: "4 different news" -> exactly 4 items, each with its source
+                    question += f" - give exactly {n_items} separate items as a numbered list, each with its source" + (" (different news outlets if possible)" if news else "")
+                    pl["count"] = n_items
                 ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or intents.requested_count(q) or
                                            (intents.requested_count(((ctx or {}).get("last") or {}).get("task", "")) if orig_task != task or len(first.split()) < 6 else 0) or 0)
                 if later:  # 2.3.0: "search X then open github in a new tab then xbox" - do the rest too
@@ -966,6 +1007,17 @@ class Agent:
                 el_text = ""
                 if act["action"] in ("click_element", "type_element") and snap:
                     el_text = next((e.get("text", "") for e in snap.get("elements", []) if str(e.get("id")) == str(act.get("id"))), "")
+                if act["action"] in ("type", "type_element") and self.desktop_only and act.get("text"):
+                    import difflib  # 2.3.3: never type the user's whole request into an app - only the extracted query
+                    said = (getattr(self, "user_text", "") or orig_task).lower()
+                    if len(act["text"].split()) >= 5 and difflib.SequenceMatcher(None, act["text"].lower(), said).ratio() >= 0.7:
+                        qq = (pl.get("query") or "").strip()
+                        if qq and difflib.SequenceMatcher(None, qq.lower(), said).ratio() < 0.7:
+                            self.log(f"[app] typing the query \"{qq}\" instead of your whole sentence"); act["text"] = qq
+                        else:
+                            history.append(f"{step}: type -> BLOCKED: that is the user's whole request, not something to type into the app")
+                            notes.append("Do NOT type the user's request into the app. Type only a short search term, or use done if the app can't do this.")
+                            entry["blocked"] = "whole_sentence"; logf.write(json.dumps(entry) + "\n"); continue
                 if act["action"] in ("type", "type_element"):  # 2.1.0: never type invented credentials (vision loop too)
                     import creds
                     why = creds.check_type(act.get("text"), getattr(self, "user_text", "") or orig_task, {"label": el_text})

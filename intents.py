@@ -213,9 +213,16 @@ def requested_count(text):
     w = re.search(r"\b(?:top|the)\s+(twenty five|three|five|ten|fifteen|twenty|thirty|fifty|hundred)\b", text or "", re.I)
     if w: return WORDNUM[w.group(1).lower()]
     m = re.search(r"\btop\s+(\d{1,3})\b|\b(\d{1,3})\s+(?:richest|best|biggest|largest|top)\b", text or "", re.I)
-    return int(m.group(1) or m.group(2)) if m else None
+    if m: return int(m.group(1) or m.group(2))
+    # 2.3.3: "the 4 different news", "5 latest headlines", "in 4 different news stations", "three stories"
+    t = fix_typos(text or "")
+    m = re.search(r"\b(\d{1,2}|two|three|four|five|six|seven|eight|nine|ten)\s+(?:(?:different|diffrent|latest|lastest|recent|new|top|main|big|other|separate|good)\s+)*"
+                  r"(news|stories|story|headlines?|articles?|sources?|outlets?|stations?|channels?|sites?|websites?|examples?|reasons?|facts?|tips?|ideas?|options?|things?|items?|ways?)\b", t, re.I)
+    if m:
+        n = m.group(1).lower(); return int(n) if n.isdigit() else {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}[n]
+    return None
 
-TYPOS = {"linkden": "linkedin", "linkdin": "linkedin", "linkedn": "linkedin", "linkeden": "linkedin", "instagarm": "instagram", "instgram": "instagram", "insta": "instagram", "agian": "again", "artcile": "article", "amry": "army", "musiuc": "music", "musci": "music", "muisc": "music", "msuic": "music", "musik": "music", "spotfy": "spotify", "sptify": "spotify", "spoitfy": "spotify", "claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
+TYPOS = {"linkden": "linkedin", "linkdin": "linkedin", "linkedn": "linkedin", "linkeden": "linkedin", "instagarm": "instagram", "instgram": "instagram", "insta": "instagram", "agian": "again", "diffrent": "different", "diferent": "different", "lastest": "latest", "latets": "latest", "nwes": "news", "artcile": "article", "amry": "army", "musiuc": "music", "musci": "music", "muisc": "music", "msuic": "music", "musik": "music", "spotfy": "spotify", "sptify": "spotify", "spoitfy": "spotify", "claick": "click", "clcik": "click", "clik": "click", "cilck": "click", "clikc": "click", "cick": "click", "clck": "click",
          "serach": "search", "seach": "search", "saerch": "search", "searh": "search", "sreach": "search", "serch": "search",
          "youtueb": "youtube", "yotube": "youtube", "youtub": "youtube", "yt": "youtube", "youube": "youtube", "you tube": "youtube",
          "plya": "play", "paly": "play", "pley": "play", "opne": "open", "oepn": "open", "vidoe": "video", "vedio": "video",
@@ -435,3 +442,13 @@ def title_match(query, title):
     return hit / len(toks)
 
 MIX_RE = re.compile(r"\b(mix|radio|playlist|full album|compilation|1 hour|10 hours|hours? loop|nonstop)\b|^Mix\s*-", re.I)
+
+
+# 2.3.3: multi-step requests ("find the news ... then open youtube and play a hindi song") run step by step
+_STEP_VERB = (r"(?:(?:ok(?:ay)?|also|and|please|now|can you|could you|would you|will you|pls|in a new tab|on a new tab|in another tab)\s+)*"
+              r"(?:open|go|take|find|search|look|play|watch|listen|put|tell|show|get|make|create|write|send|close|pause|download|read|check|give|start|launch|visit)\b")
+_STEP_SPLIT = re.compile(r"\s*(?:,\s*|\.\s+)?\b(?:and\s+)?(?:then|after that|afterwards|next)\b[,]?\s*(?=" + _STEP_VERB + ")", re.I)
+
+def split_steps(task):
+    parts = [p.strip(" ,.") for p in _STEP_SPLIT.split(task or "") if p and p.strip(" ,.")]
+    return parts if len(parts) > 1 and all(len(p.split()) >= 2 for p in parts) else [task]

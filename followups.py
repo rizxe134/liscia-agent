@@ -26,6 +26,22 @@ def browser_redo(task, ctx):
     prev = re.sub(r"\s+(?:on|in|with|using)\s+(?:" + BROWSERS + r")\s*$", "", last["task"].strip(), flags=re.I)
     return f"{prev} in {b}", f"\"{task.strip()}\" = redo \"{last['task']}\" in {b}"
 
+REST_RE = re.compile(r"\b(?:(?:did\s*n'?t|didnt|did not|never|forgot to|haven'?t|havent)\s+(?:do|did|finish|complete|get to)\s+(?:the\s+)?"
+                     r"(?:rest|other (?:things|parts|steps|stuff)|second (?:part|thing)|next (?:part|thing)|everything|all of it)|"
+                     r"(?:do|finish|complete|continue with)\s+the\s+(?:rest|other (?:things|parts|steps))|what about the rest)\b", re.I)
+FAILED_RE = re.compile(r"^\s*(?:stopped|i searched but|couldn'?t|i couldn'?t|i stopped)", re.I)
+
+def rest_of(task, ctx):
+    """'you didn't do the rest' -> the unfinished parts of the previous multi-step request (None if not that kind of message)."""
+    last = (ctx or {}).get("last") or {}
+    if not REST_RE.search(intents.fix_typos(task or "")) or not last.get("task"): return None
+    parts = last.get("parts") or intents.split_steps(last["task"])
+    if len(parts) < 2: return None
+    done = last.get("done")
+    if done is None: done = [] if FAILED_RE.match(str(last.get("result") or "")) else [0]
+    todo = [p for k, p in enumerate(parts) if k not in done]
+    return " then ".join(todo) if todo else None
+
 def is_retry(task, ctx):
     """'thats the wrong song' / 'try again and search it up' right after a media task -> redo it (deterministically)."""
     last = (ctx or {}).get("last") or {}
