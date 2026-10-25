@@ -31,3 +31,17 @@ class SongPlays(unittest.TestCase):
     def test_song_wording_not_search_only(self):
         import re, inspect, core
         self.assertIn("a song request implies playing", inspect.getsource(core.Agent._run))
+
+class Tracing235(unittest.TestCase):
+    def test_events_and_fallback_reason(self):
+        import providers
+        cloud = mock.Mock(provider="gemini", text_model="gemini-pro-latest", model="gemini-pro-latest")
+        cloud.text_chat.side_effect = providers.ProviderError("gemini", "quota", "rate limit or quota exceeded (429)")
+        local = mock.Mock(model="qwen3-vl:4b-instruct", text_model="qwen2.5:7b"); local.check.return_value = ["qwen2.5:7b", "qwen3-vl:4b-instruct"]
+        local.text_chat.return_value = "ok"
+        evs = []; c = providers.TracingClient(providers.FallbackClient(cloud, local, log=lambda m: None), evs.append)
+        self.assertEqual(c.text_chat([{"role": "user", "content": "x"}]), "ok")
+        e = evs[0]; self.assertEqual((e["provider"], e["model"], e["fallback"], e["used_model"]), ("gemini", "gemini-pro-latest", True, "qwen2.5:7b"))
+        self.assertIn("429", e["fallback_reason"])
+        cloud.text_chat.side_effect = None; cloud.text_chat.return_value = "hi"; c.text_chat([{"role": "user", "content": "y"}])
+        self.assertFalse(evs[1]["fallback"]); self.assertNotIn("key", str(evs).lower())

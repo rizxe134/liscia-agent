@@ -76,7 +76,7 @@ class SettingsKeys(unittest.TestCase):
         settings.apply(self.cfg, {"provider": "anthropic"})
         if True:
             a = core.Agent(self.cfg, log=lambda m: None, gui=mock.Mock(), capture=lambda: None)
-        self.assertIsInstance(a.client, providers.FallbackClient); self.assertEqual(a.client.primary.provider, "anthropic")
+        self.assertIsInstance(a.client.inner, providers.FallbackClient); self.assertEqual(a.client.primary.provider, "anthropic")
         self.assertFalse(core.uses_norm_coords(self.cfg))
         settings.apply(self.cfg, {"provider": "gemini"}); self.assertTrue(core.uses_norm_coords(self.cfg))
         settings.apply(self.cfg, {"provider": "ollama"}); self.assertTrue(core.uses_norm_coords(self.cfg))  # qwen3-vl

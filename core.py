@@ -137,7 +137,11 @@ class Agent:
         if client is None:
             import providers
             client = providers.make_client(cfg, log=log)
-        self.client = client
+        try:
+            import providers as _pv
+            self.client = _pv.TracingClient(client, self._llm_event) if not isinstance(client, _pv.TracingClient) else client
+        except Exception:
+            self.client = client
         self.on_token = None  # UI sets this to stream model output
         use_dom = cfg["agent"].get("browser_dom", True) and IS_MAC
         self.dom = dom if dom is not None else (browser_dom.BrowserDOM(cfg["agent"].get("max_elements", 60), log=log) if use_dom else None)
@@ -499,6 +503,19 @@ class Agent:
             if self._session_on: self.agent_session(False)
             if CURRENT is self: CURRENT = None
 
+    def _llm_event(self, ev):
+        """2.3.5: every LLM call goes into the run log; the step log says which provider answered (once per run, and on fallback)."""
+        lf = getattr(self, "_logf", None)
+        if lf is not None and not lf.closed: lf.write(json.dumps({"llm": ev}) + "\n")
+        import providers
+        name = providers.NAMES.get(ev["provider"], ev["provider"]) if ev["provider"] != "ollama" else "local Ollama"
+        key = (ev["provider"], ev["model"], ev.get("fallback"))
+        if ev.get("fallback"):
+            if getattr(self, "_llm_seen", None) != key: self.log(f"[model] {name} failed, using local ({ev.get('used_model')}): {ev.get('fallback_reason', '')[:160]}")
+        elif ev.get("error"): self.log(f"[model] {name} ({ev['model']}) error: {ev['error'][:160]}")
+        elif getattr(self, "_llm_seen", None) != key: self.log(f"[model] via {name} ({ev['model']})")
+        self._llm_seen = key
+
     @staticmethod
     def _all_opens(task):
         try:
@@ -530,7 +547,7 @@ class Agent:
         import paths
         run_dir = os.path.join(paths.runs_dir(a_cfg.get("runs_dir", "runs")), datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
         os.makedirs(run_dir, exist_ok=True); self.last_run_dir = run_dir
-        logf = open(os.path.join(run_dir, "log.jsonl"), "a", encoding="utf-8")
+        logf = open(os.path.join(run_dir, "log.jsonl"), "a", encoding="utf-8"); self._logf = logf; self._llm_seen = None
         if getattr(self, "chat_id", None): logf.write(json.dumps({"chat_id": self.chat_id}) + "\n")
         logf.write(json.dumps({"task": task}) + "\n")
         history, result, notes = [], "max steps reached", []
@@ -579,6 +596,8 @@ class Agent:
         except Exception: pass
         self.plan_info = pl
         logf.write(json.dumps({"plan": pl, "secs": round(time.time() - t_plan, 1)}) + "\n")
+        _src = str(pl.get("source") or "model")
+        self.log(f"[plan] {pl.get('intent')} - decided by {'a rule' if _src.startswith('rule') else 'the model'} ({_src})")
         self.log(f"[plan] {pl['intent']}" + (f" -> {', '.join(pl['outputs'])}" if pl["outputs"] else "") + (f" | {pl['query']}" if pl.get("query") else "") +
                  f" ({time.time() - t_plan:.1f}s, {pl.get('source')})")
         self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",

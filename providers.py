@@ -91,6 +91,7 @@ class CloudClient:
         gen = {"maxOutputTokens": max_tokens, "temperature": temperature}
         if json_mode or schema: gen["responseMimeType"] = "application/json"
         if model.startswith("gemini-2.5"): gen["thinkingConfig"] = {"thinkingBudget": 0 if "pro" not in model else 128}
+        else: gen["maxOutputTokens"] = max_tokens + 2048  # 2.3.5: newer Gemini models think first; leave room or the reply comes back empty (MAX_TOKENS)
         body = {"contents": contents, "generationConfig": gen}
         if system: body["systemInstruction"] = {"parts": [{"text": system}]}
         return f"{self.URLS[p]}/models/{model}:generateContent", body
@@ -207,11 +208,12 @@ class FallbackClient:
             except Exception: self._local_ok = False
         return self._local_ok
     def _run(self, name, *a, **k):
+        self.last_fallback = None
         try: return getattr(self.primary, name)(*a, **k)
         except ProviderError as e:
             if not self._has_local(): raise
-            if not self.used_fallback: self.log(f"[model] {e} -> using the local model instead")
-            self.used_fallback = True
+            if not self.used_fallback: self.log(f"[model] {NAMES.get(self.primary.provider, self.primary.provider)} failed, using the local model: {e}")
+            self.used_fallback = True; self.last_fallback = str(e)[:300]
             k.pop("model", None)
             return getattr(self.local, name)(*a, **k)
     def chat(self, *a, **k): return self._run("chat", *a, **k)
@@ -253,3 +255,30 @@ def norm_coords(cfg):
     if p == "gemini": return True
     if p in ("openai", "anthropic"): return False
     return "qwen3-vl" in vision_model_name(cfg).lower()
+
+
+class TracingClient:
+    """2.3.5: records provider / model / seconds / fallback (+ reason) for every LLM call -> on_event(dict). Never sees or logs keys."""
+    def __init__(self, inner, on_event):
+        self.inner, self.on_event = inner, on_event
+    def __getattr__(self, k): return getattr(self.inner, k)
+    def _who(self, kind, model):
+        c = self.inner; base = getattr(c, "primary", c)
+        prov = getattr(base, "provider", None) or "ollama"
+        m = model or (getattr(base, "text_model", "") if kind == "text" else getattr(base, "model", "")) or getattr(base, "model", "")
+        return prov, m
+    def _call(self, kind, fn, *a, **k):
+        prov, model = self._who(kind, k.get("model")); t = time.time(); err = None
+        try: return fn(*a, **k)
+        except Exception as e: err = f"{type(e).__name__}: {str(e)[:200]}"; raise
+        finally:
+            fb = getattr(self.inner, "last_fallback", None)
+            ev = {"provider": prov, "model": model, "kind": kind, "secs": round(time.time() - t, 2), "fallback": bool(fb)}
+            if fb:
+                loc = getattr(self.inner, "local", None)
+                ev.update(fallback_reason=fb, used="ollama", used_model=(getattr(loc, "text_model", "") if kind == "text" else getattr(loc, "model", "")) if loc else "")
+            if err: ev["error"] = err
+            try: self.on_event(ev)
+            except Exception: pass
+    def chat(self, *a, **k): return self._call("vision", self.inner.chat, *a, **k)
+    def text_chat(self, *a, **k): return self._call("text", self.inner.text_chat, *a, **k)
