@@ -43,3 +43,8 @@ class Steps(unittest.TestCase):
         r = a._run_multi(M1, intents.split_steps(M1))
         self.assertEqual(len(seen), 2); self.assertEqual(a.last_task_meta["done"], [1]); self.assertEqual(a.last_task_meta["task"], M1)
         self.assertIn("1) stopped", r); self.assertIn("2) Playing X", r)
+
+class Live234(unittest.TestCase):
+    def test_youtube_search_of_whole_sentence_is_not_an_open(self):
+        self.assertFalse(core.Agent._all_opens(M1))
+        self.assertTrue(core.Agent._all_opens("open linkedin then open instagram in another tab"))

@@ -496,7 +496,8 @@ class Agent:
     @staticmethod
     def _all_opens(task):
         try:
-            fixed, rest = intents.plan(task); return bool(fixed) and not rest
+            fixed, rest = intents.plan(task)  # 2.3.4: only real site opens, never a search/results page built from the whole sentence
+            return bool(fixed) and not rest and all(a.get("action") == "open_url" and not re.search(r"/results\?|/search\?", a.get("url", "")) for a in fixed)
         except Exception: return False
 
     def _run_multi(self, task, parts):
@@ -659,6 +660,11 @@ class Agent:
                 q = pl["query"] or first
                 url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
                 news = bool(re.search(r"\b(news|headlines?|breaking)\b", q + " " + first, re.I))
+                if news and intents.requested_count(orig_task + " " + q):  # "4 different news stations" = 4 stories, not stories about TV stations
+                    q2 = re.sub(r"\b(?:\d{1,2}|two|three|four|five|six|seven|eight|nine|ten|different|separate)\b|\b(?:news\s+)?(?:stations?|outlets?|channels?|sources?)\b", " ", q, flags=re.I)
+                    q2 = " ".join(q2.split()); q2 = q2 if re.search(r"\bnews\b", q2, re.I) else (q2 + " news").strip()
+                    q = q2 if re.search(r"\b(latest|today|top|breaking|recent)\b", q2, re.I) else "latest " + q2
+                    url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
                 if news: url += "&tbm=nws"  # 2.3.3: news results list the outlet and time for every story
                 webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
                 question = q if (orig_task != task or len(first.split()) < 5 or followups.is_retry(orig_task, ctx)) else first

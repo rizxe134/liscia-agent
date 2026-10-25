@@ -77,7 +77,7 @@ class ExtensionLink:
 
 LINK = ExtensionLink()  # one per process: shared by the chat app's agent and the panel's agent
 
-APP_VERSION = "2.3.3"
+APP_VERSION = "2.3.4"
 
 def _v(s):
     try: return tuple(int(x) for x in str(s).split(".")[:3])
