@@ -133,7 +133,7 @@ class SettingsWindow:
         import providers, keystore, settings
         from tkinter import ttk
         self.app, self.cfg = app, app.cfg; settings.defaults(self.cfg)
-        top = self.win = tk.Toplevel(app.root, bg=BG, highlightbackground=FG, highlightthickness=2); top.title("SETTINGS"); top.geometry("700x680")
+        top = self.win = tk.Toplevel(app.root, bg=BG, highlightbackground=FG, highlightthickness=2); top.title("SETTINGS"); top.geometry("760x720")
         st = ttk.Style(top)
         try: st.theme_use("clam")
         except Exception: pass
@@ -145,6 +145,10 @@ class SettingsWindow:
         self.dl_tab = tk.Frame(nb, bg=BG); nb.add(self.dl_tab, text=" DOWNLOAD ")
         self.theme_tab = tk.Frame(nb, bg=BG); nb.add(self.theme_tab, text=" THEMES ")
         self.build_themes(self.theme_tab)
+        import botui  # 3.0.0
+        self.conn_tab = tk.Frame(nb, bg=BG); nb.add(self.conn_tab, text=" CONNECTIONS ")
+        self.mcp_tab = tk.Frame(nb, bg=BG); nb.add(self.mcp_tab, text=" MCP ")
+        self.conns = botui.ConnectionsTab(self, self.conn_tab); self.mcp = botui.McpTab(self, self.mcp_tab)
         top.option_add("*TCombobox*Listbox.background", BG); top.option_add("*TCombobox*Listbox.foreground", FG)
         top.option_add("*TCombobox*Listbox.selectBackground", FG); top.option_add("*TCombobox*Listbox.selectForeground", BG)
         L = lambda t, fg=FG, bold=False, **k: tk.Label(w, text=t, fg=fg, bg=BG, font=FONT + (("bold",) if bold else ()), anchor="w", justify="left", **k)
@@ -459,17 +463,19 @@ class ChatApp:
         pick_font(r)
         r.title("LISCIA AGENT"); r.configure(bg=BG); r.geometry("980x580")
         # ---- sidebar: chats ----
-        side = tk.Frame(r, bg=BG, highlightthickness=1, highlightbackground=LINE, width=220); side.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        side = tk.Frame(r, bg=BG, highlightthickness=1, highlightbackground=LINE, width=250); side.pack(side="left", fill="y", padx=(8, 0), pady=8)
         side.pack_propagate(False)
-        btn(side, "[ + NEW CHAT ]", self.new_chat).pack(fill="x", padx=6, pady=(6, 4))
-        tk.Label(side, text="CHATS", fg=DIM, bg=BG, font=FONT, anchor="w").pack(fill="x", padx=6)
-        self.chat_list = tk.Listbox(side, bg=BG, fg=FG, font=FONT, relief="flat", highlightthickness=0, selectbackground=FG,
-                                    selectforeground=BG, activestyle="none", exportselection=False)
-        self.chat_list.pack(fill="both", expand=True, padx=6)
-        self.chat_list.bind("<<ListboxSelect>>", lambda e: self._pick_chat())
-        self.chat_list.bind("<Double-Button-1>", lambda e: self.rename_chat())
-        row = tk.Frame(side, bg=BG); row.pack(fill="x", padx=6, pady=6)
-        btn(row, "[ RENAME ]", self.rename_chat).pack(side="left"); btn(row, "[ DELETE ]", self.delete_chat, fg=WARN).pack(side="right")
+        import botui  # 3.0.0: chats are bots, each with its own robot
+        btn(side, "[ + NEW BOT ]", self.new_bot).pack(fill="x", padx=6, pady=(6, 4))
+        tk.Label(side, text="BOTS", fg=DIM, bg=BG, font=FONT, anchor="w").pack(fill="x", padx=6)
+        self.bot_list = botui.BotList(side, self._pick_id, self.open_profile)
+        row2 = tk.Frame(side, bg=BG); row2.pack(side="bottom", fill="x", padx=6, pady=(0, 6))
+        btn(row2, "PROFILE", lambda: self.open_profile(self.store.current_id)).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        btn(row2, "TRASH", self.open_trash).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        row = tk.Frame(side, bg=BG); row.pack(side="bottom", fill="x", padx=6, pady=(6, 3))
+        btn(row, "RENAME", self.rename_chat).pack(side="left", fill="x", expand=True, padx=(0, 2))
+        btn(row, "DELETE", self.delete_chat, fg=WARN).pack(side="left", fill="x", expand=True, padx=(2, 0))
+        self.bot_list.pack(fill="both", expand=True, padx=6)
         # ---- main column ----
         main = tk.Frame(r, bg=BG); main.pack(side="left", fill="both", expand=True)
         top = tk.Frame(main, bg=BG); top.pack(fill="x", padx=8, pady=(6, 0))
@@ -483,6 +489,7 @@ class ChatApp:
         for tag, col in (("user", USER), ("agent", FG), ("step", STEP), ("warn", WARN), ("sys", DIM), ("hdr", DIM)):
             self.log.tag_config(tag, foreground=col)
         self.log.tag_config("agent", spacing1=4, spacing3=6, font=FONT + ("bold",)); self.log.tag_config("user", spacing1=8)
+        self.log.tag_config("who", underline=False)
         self.log.tag_config("hdr", underline=True); self.log.tag_bind("hdr", "<Enter>", lambda e: self.log.config(cursor="hand2"))
         self.log.tag_bind("hdr", "<Leave>", lambda e: self.log.config(cursor="xterm"))
         self.grp = None; self.grp_n = 0
@@ -498,7 +505,8 @@ class ChatApp:
         self._bind_history()
         self.log.pack(fill="both", expand=True, padx=8, pady=6, before=self.status)  # packed last so input row always shows
         r.bind("<F12>", lambda e: self.stop()); r.bind("<Command-period>", lambda e: self.stop())
-        r.bind("<Control-n>", lambda e: self.new_chat()); r.bind("<Command-n>", lambda e: self.new_chat())
+        r.bind("<Control-n>", lambda e: self.new_bot()); r.bind("<Command-n>", lambda e: self.new_bot())
+        self.working_cid = None
         self.refresh_model_label(); self.refresh_chats(); self.show_chat(self.store.current())
         import overlay  # 2.2.0: desktop click ring, drawn on the Tk thread
         overlay.HOOK = lambda x, y: self.q.put(("ring", (x, y)))
@@ -564,40 +572,68 @@ class ChatApp:
 
     def refresh_chats(self):
         lst = self.store.list(); self.store.current_ids = [c["id"] for c in lst]
-        self.chat_list.delete(0, "end")
-        for c in lst: self.chat_list.insert("end", " " + c["title"])
-        cur = self.store.current_id
-        if cur in self.store.current_ids:
-            i = self.store.current_ids.index(cur); self.chat_list.selection_clear(0, "end"); self.chat_list.selection_set(i); self.chat_list.see(i)
+        self.bot_list.set(lst, self.store.current_id, working=self.working_cid if self.busy else None,
+                          unread=getattr(self.bot_list, "unread", set()))
+
+    def cur_bot(self):
+        try: return self.store.current().get("bot") or {}
+        except Exception: return {}
 
     def show_chat(self, c):
         self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
         self.title_lbl.config(text=f"> LISCIA AGENT // {c['title']}")
+        self._bot = c.get("bot") or {}
         if not c["messages"]: self.write("sys", self.INTRO)
         for m in c["messages"]:
             if m["role"] == "user": self.write("user", m["content"])
-            elif m["role"] == "assistant": self.write("agent", m["content"])
+            elif m["role"] == "assistant":
+                fb = m.get("from_bot")
+                self.write("agent", (fb, m["content"]) if fb else m["content"])
             else: self.write("sys", m["content"])
 
-    def new_chat(self):
+    def new_chat(self):  # '/new': a fresh conversation with the same kind of bot
         if self.busy: self.write("warn", "Busy - press STOP first, or wait."); return
         c = self.store.new_or_reuse(); self.refresh_chats(); self.show_chat(c); self.entry.focus_set()
 
-    def _pick_chat(self):
-        sel = self.chat_list.curselection()
-        if not sel or self.store.current_ids[sel[0]] == self.store.current_id: return
-        if self.busy: self.refresh_chats(); self.write("warn", "Busy - finish or STOP the current task before switching chats."); return
-        self.show_chat(self.store.select(self.store.current_ids[sel[0]]))
+    def new_bot(self):
+        if self.busy: self.write("warn", "Busy - press STOP first, or wait."); return
+        import botui
+        d = botui.BotDialog(self, new=True); self.root.wait_window(d.win)
+        if not d.result: return
+        c = self.store.new(bot=d.result); self.refresh_chats(); self.show_chat(c); self.entry.focus_set()
+
+    def edit_bot(self, cid=None):
+        if cid and cid != self.store.current_id: self._pick_id(cid)
+        import botui
+        c = self.store.current(); d = botui.BotDialog(self, bot=c.get("bot")); self.root.wait_window(d.win)
+        if not d.result: return
+        c = self.store.update_bot(c["id"], **d.result); self.refresh_chats(); self._bot = c["bot"]
+        self.title_lbl.config(text=f"> LISCIA AGENT // {c['title']}")
+
+    def open_profile(self, cid=None):
+        import botui
+        cid = cid or self.store.current_id
+        if cid != self.store.current_id: self._pick_id(cid)
+        botui.ProfilePane(self, cid)
+
+    def open_trash(self):
+        import botui; botui.trash_dialog(self)
+
+    def _pick_id(self, cid):
+        if cid == self.store.current_id: return
+        if self.busy: self.write("warn", "Busy - finish or STOP the current task before switching bots."); return
+        self.show_chat(self.store.select(cid)); self.bot_list.select(cid)
 
     def rename_chat(self):
-        c = self.store.current(); name = retro_prompt(self.root, "RENAME CHAT", c["title"])
+        c = self.store.current(); name = retro_prompt(self.root, "RENAME BOT", c["title"])
         if name: self.store.rename(c["id"], name); self.refresh_chats(); self.title_lbl.config(text=f"> LISCIA AGENT // {name.strip()[:80]}")
 
     def delete_chat(self):
         if self.busy: self.write("warn", "Busy - press STOP first."); return
         c = self.store.current()
-        if not retro_confirm(self.root, f"Delete the chat \"{c['title']}\"? This can't be undone."): return
+        if not retro_confirm(self.root, f"Delete the bot \"{c['title']}\" and its chat?\nIt goes to TRASH for 30 days (restore it from there)."): return
         self.store.delete(c["id"]); self.refresh_chats(); self.show_chat(self.store.current()); self.refresh_chats()
+        self.write("sys", f"\"{c['title']}\" moved to TRASH (30 days). Press [ TRASH ] to restore it.")
 
     # ---------------- settings ----------------
     def refresh_model_label(self):
@@ -673,9 +709,54 @@ class ChatApp:
 
     STEPS_OPEN = False  # step logs start collapsed under a "▸ N steps" toggle
 
+    def avatar(self, working=False, bot=None):
+        """A small robot for the current bot (or another bot that answered), embedded in the chat log."""
+        import robot, bots
+        b = bot or getattr(self, "_bot", None) or {}
+        ic = robot.RobotIcon(self.log, color=bots.color_hex(b), style=b.get("style", "classic"), size=FONT[1], bg=BG, animate=working)
+        if working: ic.set_working(True)
+        self.log.window_create("end", window=ic, align="center", padx=2); return ic
+
+    def typing_start(self):
+        """'<robot> Name is thinking ···' line while the bot works; removed when its reply arrives."""
+        self.typing_stop()
+        self.log.config(state="normal"); self.log.mark_set("typing_start", "end-1c"); self.log.mark_gravity("typing_start", "left")
+        self._typer = self.avatar(working=True)
+        self.log.insert("end", f" {self.bot_name()} is thinking ", ("sys", "typing")); self.log.insert("end", "\u00b7  \n", ("sys", "typing", "tdots"))
+        self.log.mark_set("typing_end", "end-1c"); self.log.mark_gravity("typing_end", "left")
+        self.log.see("end"); self.log.config(state="disabled"); self._typing = True
+
+    def typing_stop(self):
+        if not getattr(self, "_typing", False): return
+        self._typing = False
+        try:
+            self.log.config(state="normal"); self.log.delete("typing_start", "typing_end"); self.log.config(state="disabled")
+        except tk.TclError: pass
+
+    def _typing_tick(self):
+        if not getattr(self, "_typing", False): return
+        r = self.log.tag_ranges("tdots")
+        if r:
+            n = self.spin_i // 3 % 3 + 1
+            self.log.config(state="normal"); self.log.delete(r[0], r[1])
+            self.log.insert(r[0], " ".join("\u00b7" * n).ljust(5) + "\n", ("sys", "typing", "tdots")); self.log.config(state="disabled")
+
+    def bot_name(self): return ((getattr(self, "_bot", None) or {}).get("name") or "AGENT")[:24]
+
     def write(self, tag, text):
-        prefix = {"user": "YOU   > ", "agent": "AGENT > ", "step": "   ::  ", "warn": "  !!   ", "sys": ""}[tag]
+        prefix = {"user": "you > ", "agent": "", "step": "   ::  ", "warn": "  !!   ", "sys": ""}[tag]
         self.log.config(state="normal")
+        if tag == "agent":
+            self.typing_stop()
+            other = text if isinstance(text, tuple) else None
+            if other: bot, text = other
+            else: bot = None
+            self.grp = None; ic = self.avatar(bot=bot)
+            name = ((bot or {}).get("name") or self.bot_name())[:24]
+            self.log.insert("end", f" {name} > ", ("agent", "who"))
+            self.log.insert("end", text + "\n", "agent"); self.log.see("end"); self.log.config(state="disabled"); return
+        if tag == "user":
+            self.log.insert("end", "  ", "user")
         if tag == "step":
             if self.grp is None:  # first step of this task: add the toggle line
                 self.grp_n += 1; self.grp = g = f"grp{self.grp_n}"; self.grp_count = 0
@@ -714,31 +795,43 @@ class ChatApp:
             ttk.Style(self.root).configure("R.TCombobox", fieldbackground=BG, background=BG, foreground=FG, arrowcolor=FG, bordercolor=LINE)
         except Exception: pass
         self.root.configure(bg=BG)
+        try: self.refresh_chats()  # robots follow the new font size
+        except Exception: pass
 
     def _tick(self):
         while not self.q.empty():
             kind, val = self.q.get()
             if kind == "confirm":
                 msg, ev, box = val; box["ok"] = retro_confirm(self.root, msg); ev.set()
+            elif kind == "card": self._show_card(*val)
             elif kind == "status": self.status_text = val; self.live = ""
             elif kind == "live": self.live = (self.live + val)[-90:]
             elif kind == "stream_start":
-                self.log.config(state="normal"); self.log.insert("end", "AGENT > ", "agent"); self.log.config(state="disabled")
+                self.typing_stop()
+                if self.working_cid: self.bot_list.talking(self.working_cid, True)
+                self.log.config(state="normal"); self.grp = None; self._talker = self.avatar(working=True); self._talker.set_talking(True)
+                self.log.insert("end", f" {self.bot_name()} > ", ("agent", "who")); self.log.config(state="disabled")
             elif kind == "stream":
                 self.log.config(state="normal"); self.log.insert("end", val, "agent"); self.log.see("end"); self.log.config(state="disabled")
             elif kind == "stream_end":
                 self.log.config(state="normal"); self.log.insert("end", "\n"); self.log.config(state="disabled")
+                t = getattr(self, "_talker", None)
+                if t:
+                    try: t.set_talking(False); t.happy()
+                    except tk.TclError: pass
             elif kind == "ring":
                 try:
                     import overlay; overlay.ring(self.root, *val)
                 except Exception: pass
-            elif kind == "end": self._set_busy(False)
+            elif kind == "end": self.typing_stop(); self._set_busy(False)
+            elif kind == "typing": self.typing_start()
             elif kind == "busy": self._set_busy(True)
             elif kind == "chats_changed":
                 what, cid = val
                 if what in ("list", "current") or (what == "message" and cid not in self.store.current_ids): self.refresh_chats()
                 elif what == "message":
                     self.refresh_chats()
+                    if cid != self.store.current_id: self.bot_list.mark_unread(cid)
                     if cid == self.store.current_id and not self.busy:
                         c = self.store.get(cid)
                         if c: self.show_chat(c)  # a message from the Chrome panel in this chat
@@ -746,6 +839,10 @@ class ChatApp:
                     c = self.store.get(cid)
                     if c: self.show_chat(c)
             else: self.write(kind, val)
+        try:
+            self.bot_list.tick(self.spin_i)
+            self._typing_tick()
+        except Exception: pass
         if self.busy:
             self.spin_i += 1
             dots = "." * (self.spin_i // 3 % 4)
@@ -755,10 +852,41 @@ class ChatApp:
             self.status.config(text="READY _" if self.spin_i // 5 % 2 == 0 else "READY", fg=DIM); self.spin_i += 1
         self.root.after(100, self._tick)
 
+    def _show_card(self, msg, ev, box):
+        """3.0.0: an Approve/Cancel card inside the chat (tool writes: calendar, email drafts, issues, MCP)."""
+        self.log.config(state="normal")
+        card = tk.Frame(self.log, bg=BG, highlightthickness=1, highlightbackground=WARN)
+        tk.Label(card, text="!! APPROVAL NEEDED", fg=WARN, bg=BG, font=FONT + ("bold",), anchor="w").pack(fill="x", padx=8, pady=(6, 2))
+        tk.Label(card, text=msg, fg=FG, bg=BG, font=FONT, anchor="w", justify="left", wraplength=560).pack(fill="x", padx=8)
+        bar = tk.Frame(card, bg=BG); bar.pack(anchor="w", padx=8, pady=6)
+        res = tk.Label(bar, text="", fg=DIM, bg=BG, font=FONT)
+        def done(ok):
+            if ev.is_set(): return
+            box["ok"] = ok; ev.set()
+            for w in bar.winfo_children():
+                if isinstance(w, FlatButton): w.configure(state="disabled")
+            res.config(text="approved" if ok else "cancelled", fg=FG if ok else WARN)
+        FlatButton(bar, text="[ APPROVE ]", command=lambda: done(True), highlightbackground=FG).pack(side="left", padx=(0, 6))
+        FlatButton(bar, text="[ CANCEL ]", command=lambda: done(False), fg=WARN).pack(side="left")
+        res.pack(side="left", padx=8)
+        self.log.insert("end", "\n"); self.log.window_create("end", window=card); self.log.insert("end", "\n")
+        self.log.see("end"); self.log.config(state="disabled")
+
+    def card_confirm(self, msg):
+        ev, box = threading.Event(), {}
+        self.q.put(("card", (msg, ev, box)))
+        while not ev.wait(0.5):
+            if self.agent and self.agent.kill.event.is_set(): return False
+        return box.get("ok", False)
+
     def _set_busy(self, b):
         self.busy = b
+        try:
+            if b: self.working_cid = self.store.current_id
+            if self.working_cid: self.bot_list.working(self.working_cid, b)
+        except Exception: pass
         self.stop_btn.config(state="normal" if b else "disabled")
-        self.entry.config(state="disabled" if b else "normal")
+        self.entry.config(state="disabled" if b else "normal", disabledbackground=BG)
         if not b: self.entry.focus_set()
 
     def _log(self, msg):
@@ -780,13 +908,32 @@ class ChatApp:
         low = text.lower().split()[0]
         if low in ("/new", "/newchat", "/clear"): self.entry.delete(0, "end"); self.new_chat(); return
         if low in ("/settings", "/models", "/model"): self.entry.delete(0, "end"); self.open_settings(); return
+        if low in ("/remember", "/memory", "/forget", "/bot", "/newbot", "/trash"):
+            self.entry.delete(0, "end"); self.write("user", text); self.write("sys", self._bot_cmd(low, text[len(low):].strip())); return
         import slash
         reply = slash.handle(text, copy=self._copy)
         if reply is not None:  # local command: answered here, never sent to the model or logged
             self.entry.delete(0, "end"); self.write("user", text.split()[0]); self.write("sys", reply); return
         self.entry.delete(0, "end"); self.write("user", text); self._set_busy(True)
-        self.q.put(("status", "thinking"))
+        self.q.put(("status", "thinking")); self.typing_start()
         threading.Thread(target=self._work, args=(text,), daemon=True).start()
+
+    def _bot_cmd(self, cmd, arg):
+        cid = self.store.current_id
+        if cmd == "/remember":
+            if not arg: return "Usage: /remember <note>"
+            self.store.remember(cid, arg); return f"Saved to {self.bot_name()}'s memory."
+        if cmd == "/forget":
+            c = self.store.get(cid); mem = c["bot"].get("memory") or []
+            keep = [m for m in mem if arg and arg.lower() not in m.lower()] if arg else []
+            self.store.update_bot(cid, memory=keep); return f"Removed {len(mem) - len(keep)} note(s)."
+        if cmd == "/memory":
+            mem = self.cur_bot().get("memory") or []
+            return "\n".join(f"- {m}" for m in mem) or "Nothing saved yet. Use /remember <note>."
+        if cmd in ("/bot",): self.root.after(10, self.edit_bot); return "Opening the bot editor..."
+        if cmd == "/newbot": self.root.after(10, self.new_bot); return "Opening NEW BOT..."
+        if cmd == "/trash": self.root.after(10, self.open_trash); return "Opening TRASH..."
+        return ""
 
     def _copy(self, text):
         self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
@@ -795,18 +942,35 @@ class ChatApp:
         cid = self.store.current_id
         try:
             history = self.store.history(cid); ctx = self.store.context(cid)
+            import bots, toolhub
+            bot = (self.store.get(cid) or {}).get("bot") or {}; persona = bots.persona(bot)
             self.store.add(cid, "user", text)
-            self.agent = Agent(self.cfg, confirm=self._confirm, log=self._log); self.agent.chat_id = cid; self.agent.chat_ctx = ctx
+            self.agent = Agent(bots.bot_cfg(self.cfg, bot), confirm=self._confirm, log=self._log); self.agent.chat_id = cid; self.agent.chat_ctx = ctx
+            asked = bots.mentions(text, self.store.list(), exclude=cid)
+            if asked:  # 3.0.0: "@Music what should I play?" - hand it to that bot; its robot answers here
+                for ocid, ob in asked[:3]: self._ask_bot(cid, ocid, ob, text)
+                self.q.put(("end", None)); return
+            try:  # 3.0.0: the bot's app connections / MCP tools / memory first
+                tools = toolhub.bot_tools(self.cfg, bot, self.store, cid)
+                if toolhub.relevant(text, tools):
+                    self.q.put(("status", f"{bot.get('name', 'bot')} is checking its tools"))
+                    reply = toolhub.try_tools(self.agent.client, text, tools, self.card_confirm, persona, history, log=self._log)
+                    if reply is not None:
+                        self.q.put(("agent", reply)); self.store.add(cid, "assistant", reply); self.q.put(("end", None)); return
+            except Exception as e:
+                self.q.put(("step", f"[tools] skipped ({type(e).__name__}: {str(e)[:120]})"))
             self.agent.on_token = lambda p: self.q.put(("live", p))
             started = []
             def stream(p):
                 if not started: started.append(1); self.q.put(("stream_start", None))
                 self.q.put(("stream", p))
-            kind, out = route(self.agent.client, text, history, on_token=stream)
+            kind, out = route(self.agent.client, text, history, on_token=stream, persona=persona)
             if kind == "chat":
                 if started: self.q.put(("stream_end", None))
                 else: self.q.put(("agent", out))
                 self.store.add(cid, "assistant", out)
+                for ocid, ob in bots.mentions(out, self.store.list(), exclude=cid)[:1]:  # the bot asked a colleague
+                    self._ask_bot(cid, ocid, ob, out)
             else:
                 self.q.put(("step", f"working on: {out}")); self.q.put(("status", "working on your PC"))
                 result = self.agent.run(out)
@@ -819,6 +983,28 @@ class ChatApp:
             try: self.store.add(cid, "system", f"error: {e}")
             except Exception: pass
         self.q.put(("end", None))
+
+    def _ask_bot(self, cid, ocid, ob, text):
+        """Ask another bot (its persona, tools, memory and history); show + store the reply in this chat with its robot."""
+        import bots, toolhub, providers
+        me = (self.store.get(cid) or {}).get("bot", {}).get("name", "a bot")
+        q = bots.strip_mentions(text, [ob.get("name", "")]).strip()
+        self.q.put(("step", f"[handoff] asking {ob.get('name')}")); self.q.put(("status", f"asking {ob.get('name')}"))
+        client = providers.make_client(bots.bot_cfg(self.cfg, ob), log=self._log)
+        persona = bots.persona(ob) + f"\nAnother bot or the user in the '{me}' chat is asking you this. Answer briefly."
+        hist = self.store.history(ocid, 10)
+        reply = None
+        try:
+            tools = toolhub.bot_tools(self.cfg, ob, self.store, ocid)
+            reply = toolhub.try_tools(client, q, tools, self.card_confirm, persona, hist, log=self._log)
+        except Exception: reply = None
+        if reply is None:
+            reply = client.text_chat([{"role": "system", "content": __import__("core").CHAT_SYSTEM + "\n\n" + persona}] + hist +
+                                     [{"role": "user", "content": q}]).strip()
+        self.q.put(("agent", (ob, reply)))
+        self.store.add(cid, "assistant", reply, meta=None); c = self.store.get(cid)
+        c["messages"][-1]["from_bot"] = {k: ob.get(k) for k in ("name", "color", "style")}; self.store.save(c)
+        self.store.add(ocid, "user", f"(from {me}) {q}"); self.store.add(ocid, "assistant", reply)
 
     def stop(self):
         if self.agent: self.agent.kill.event.set(); self.q.put(("warn", "Stop requested."))

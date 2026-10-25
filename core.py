@@ -1200,7 +1200,7 @@ def needs_task(message):
     rp = planner.rule_plan(m)
     return bool(rp.get("sure")) and rp["intent"] != "desktop_app"
 
-def route(client, message, history=(), on_token=None):
+def route(client, message, history=(), on_token=None, persona=""):
     """Return ("chat", reply) or ("task", task). '/do ...' forces a task, '/chat ...' forces chat.
     Chat replies are generated with streaming via on_token(piece) when given."""
     m = message.strip()
@@ -1223,5 +1223,5 @@ def route(client, message, history=(), on_token=None):
             return "task", (str(obj["task"]) if _re.search(r"\b(it|that|this|them|again|same)\b", m, _re.I) and len(m.split()) <= 8 else m)
         if obj.get("reply"):  # some models answer directly anyway
             return "chat", str(obj["reply"]).strip()
-    msgs = [{"role": "system", "content": CHAT_SYSTEM}] + hist + [{"role": "user", "content": m}]
+    msgs = [{"role": "system", "content": CHAT_SYSTEM + ("\n\n" + persona if persona else "")}] + hist + [{"role": "user", "content": m}]
     return "chat", client.text_chat(msgs, on_token=on_token).strip()

@@ -34,3 +34,21 @@ def has(provider): return bool(get(provider))
 def mask(key):
     key = key or ""
     return "" if not key else (key[:3] + "…" + key[-4:] if len(key) > 10 else "••••")
+
+# 3.0.0: other secrets (connection tokens, OAuth client secrets, MCP auth headers) - same keychain, never files/logs
+def get_secret(name):
+    k = "s:" + name
+    if k in _cache: return _cache[k]
+    try: v = _kr().get_password(SERVICE, name) or ""
+    except Exception: return ""
+    _cache[k] = v; return v
+
+def set_secret(name, value):
+    value = (value or "").strip()
+    if not value: return del_secret(name)
+    _kr().set_password(SERVICE, name, value); _cache["s:" + name] = value; return True
+
+def del_secret(name):
+    try: _kr().delete_password(SERVICE, name)
+    except Exception: pass
+    _cache["s:" + name] = ""; return True

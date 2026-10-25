@@ -34,7 +34,7 @@ class UiLive(unittest.TestCase):
         self.assertEqual(str(app.log.cget("bg")).lower(), "#fafafa"); self.assertEqual(app.log.tag_cget("agent", "foreground"), "#1d1d1f")
         self.assertEqual(int(r.tk.splitlist(app.log.cget("font"))[1]), 16); self.assertEqual(cfg["ui"]["theme"], "light")
         app.apply_theme("dracula", 13); self.assertEqual(str(app.entry.cget("bg")).lower(), "#282a36")
-        sw = ui.SettingsWindow(app); self.assertEqual(len(sw.nb.tabs()), 3); sw.win.destroy(); r.destroy()
+        sw = ui.SettingsWindow(app); self.assertEqual(len(sw.nb.tabs()), 5); sw.win.destroy(); r.destroy()
 
 class Credentials(unittest.TestCase):
     BAD = [("testuser@example.com", {"label": "Email"}), ("testuser", {"label": "Username or email address"}),

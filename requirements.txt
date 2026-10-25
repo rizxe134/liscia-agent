@@ -13,3 +13,5 @@ comtypes>=1.2; sys_platform == "win32"
 psutil>=5.9
 keyring>=24
 pywin32-ctypes>=0.2; sys_platform == "win32"
+mcp>=1.10
+jsonschema>=4

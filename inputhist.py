@@ -3,7 +3,7 @@ Per-chat + global lists, persisted to input_history.json next to the chats folde
 import json, os, threading
 
 CAP = 500
-SLASH = ["/new", "/newchat", "/clear", "/settings", "/models", "/model", "/token", "/help", "/commands", "/do", "/chat"]
+SLASH = ["/new", "/newchat", "/clear", "/settings", "/models", "/model", "/token", "/help", "/commands", "/do", "/chat", "/remember", "/memory", "/forget", "/bot", "/newbot", "/trash"]
 
 class History:
     def __init__(self, path):

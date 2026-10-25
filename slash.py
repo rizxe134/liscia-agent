@@ -4,7 +4,9 @@ HELP = """Slash commands:
   /token        show this install's key (token) and copy it to the clipboard
   /help         show this list
   /do <task>    force computer control for <task>
-  /chat <msg>   force a plain chat reply (no computer control)"""
+  /chat <msg>   force a plain chat reply (no computer control)
+  /remember <x> save a note to this bot's memory   /memory  show it   /forget <word>  remove notes
+  /bot          edit this bot   /newbot  create a bot   /trash  restore deleted bots"""
 
 def handle(text, copy=None, token_loader=None):
     """Return the reply for a local command, or None if `text` isn't one (then it goes to the router as before)."""

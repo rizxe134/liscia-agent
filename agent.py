@@ -1,6 +1,8 @@
 """python agent.py            -> chat app
 python agent.py "task"     -> run one task in the console"""
 import argparse, os, sys
+if "--mcp-demo" in sys.argv:  # 3.0.0: built-in demo MCP server over stdio (no UI, no data dir changes)
+    import mcpdemo; mcpdemo.main(); sys.exit(0)
 import paths
 os.chdir(paths.data_dir())
 from core import Agent, load_config

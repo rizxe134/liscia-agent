@@ -45,19 +45,23 @@ class ChatStore:
         with open(tmp, "w", encoding="utf-8") as f: json.dump(obj, f, ensure_ascii=False, indent=1)
         os.replace(tmp, path)
 
-    def new(self, title=None, select=True):
+    def new(self, title=None, select=True, bot=None):
+        import bots
         with self.lock:
             now = self.clock()
             cid = time.strftime("%Y%m%d-%H%M%S", time.localtime(now)).lower() + "-" + secrets.token_hex(3)
+            if bot: title = bot.get("name") or title
             c = {"id": cid, "title": title or "New chat", "auto_title": title is None, "created": now, "updated": now, "messages": [], "runs": []}
+            c["bot"] = dict(bot) if bot else bots.default_bot(title or "General")
             self.save(c)
             if select: self.current_id = cid; self._save_state()
             return c
 
     def get(self, cid):
         with self.lock:
-            try: return json.load(open(self._path(cid), encoding="utf-8"))
+            try: c = json.load(open(self._path(cid), encoding="utf-8"))
             except (OSError, ValueError): return None
+            import bots; bots.ensure(c); return c
 
     def save(self, c):
         with self.lock: self._atomic(self._path(c["id"]), c)
@@ -78,7 +82,7 @@ class ChatStore:
         for fn in os.listdir(self.dir):
             if fn.endswith(".json") and not fn.startswith("_"):
                 c = self.get(fn[:-5])
-                if c: out.append({"id": c["id"], "title": c["title"], "updated": c["updated"], "count": len(c["messages"])})
+                if c: out.append({"id": c["id"], "title": c["title"], "updated": c["updated"], "count": len(c["messages"]), "bot": c.get("bot")})
         return sorted(out, key=lambda c: c["updated"], reverse=True)
 
     def current(self):
@@ -100,14 +104,52 @@ class ChatStore:
         with self.lock:
             c = self.get(cid)
             if c is None: raise KeyError(cid)
-            c["title"] = (title or "").strip()[:80] or c["title"]; c["auto_title"] = False; self.save(c); self._notify("list", cid); return c
+            c["title"] = (title or "").strip()[:80] or c["title"]; c["auto_title"] = False
+            c.setdefault("bot", {})["name"] = c["title"]; self.save(c); self._notify("list", cid); return c
 
     def delete(self, cid):
         with self.lock:
-            os.remove(self._path(cid))
+            import bots; bots.to_trash(self.dir, cid, self.clock)  # 3.0.0: 30-day trash, never a hard delete
             if self.current_id == cid:
                 self.current_id = None; self._save_state()
             self._notify("list", cid); return True
+
+    def update_bot(self, cid, **fields):
+        with self.lock:
+            c = self.get(cid)
+            if c is None: raise KeyError(cid)
+            c["bot"].update(fields)
+            if fields.get("name"): c["title"] = fields["name"].strip()[:80]; c["auto_title"] = False
+            self.save(c); self._notify("list", cid); return c
+
+    def remember(self, cid, note):
+        c = self.get(cid); mem = c["bot"].setdefault("memory", [])
+        note = " ".join(str(note).split())[:300]
+        if note and note not in mem: mem.append(note); del mem[:-100]; self.save(c)
+        return c["bot"]["memory"]
+
+    def restore(self, cid):
+        import bots
+        with self.lock: c = bots.restore(self.dir, cid); self._notify("list", cid); return c
+
+    def trash(self):
+        import bots; return bots.list_trash(self.dir, self.clock)
+
+    def migrate_bots(self):
+        """3.0.0: back up the chats folder once, then give every chat its bot block (titles become bot names)."""
+        import bots
+        with self.lock:
+            try: bots.backup_once(self.dir)
+            except Exception: return 0
+            n = 0
+            for fn in os.listdir(self.dir):
+                if fn.endswith(".json") and not fn.startswith("_"):
+                    try: c = json.load(open(os.path.join(self.dir, fn), encoding="utf-8"))
+                    except (OSError, ValueError): continue
+                    if bots.ensure(c):
+                        if c.get("auto_title", True) is not False and c["bot"].get("name") == "New chat": pass
+                        self.save(c); n += 1
+            return n
 
     def add(self, cid, role, content, run=None, meta=None):
         with self.lock:
@@ -119,6 +161,7 @@ class ChatStore:
             c["messages"].append(m); c["updated"] = m["t"]
             if role == "user" and c.get("auto_title", True) and sum(1 for x in c["messages"] if x["role"] == "user") == 1:
                 c["title"] = auto_title(content)
+                if c.get("bot", {}).get("name") in (None, "", "New chat", "General"): c["bot"]["name"] = c["title"]
             self.save(c); self._notify("message", cid); return c
 
     def history(self, cid, n=20):
@@ -169,5 +212,5 @@ def store():
     global STORE
     if STORE is None:
         import paths
-        STORE = ChatStore(); migrate_legacy(STORE, paths.data_dir())
+        STORE = ChatStore(); STORE.migrate_bots(); migrate_legacy(STORE, paths.data_dir())
     return STORE
