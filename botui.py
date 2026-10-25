@@ -69,7 +69,7 @@ class BotList:
                 w.configure(bg=u.FG if on else u.BG)
             ws[2].configure(fg=u.BG if on else u.FG); ws[4].configure(fg=u.BG if on else u.DIM)
             if i == cid: ws[3].configure(text="")
-            self.icons[i].configure(bg=u.FG if on else u.BG); self.icons[i].draw()
+            self.icons[i].configure(bg=u.BG); self.icons[i].draw()  # robot keeps a dark tile so a green bot stays visible when selected
 
     def working(self, cid, on):
         self.working_id = cid if on else None
