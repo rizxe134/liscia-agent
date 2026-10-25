@@ -62,6 +62,16 @@ class ChatStore:
     def save(self, c):
         with self.lock: self._atomic(self._path(c["id"]), c)
 
+    def new_or_reuse(self):
+        """2.3.8: NEW CHAT reuses an existing untouched "New chat" instead of piling up empty ones."""
+        with self.lock:
+            for it in self.list():
+                if it["count"] == 0:
+                    c = self.get(it["id"])
+                    if c and not c.get("runs") and c.get("auto_title", True):
+                        self.current_id = c["id"]; self._save_state(); return c
+            return self.new()
+
     def list(self):
         """Newest first: [{'id','title','updated','count'}]."""
         out = []

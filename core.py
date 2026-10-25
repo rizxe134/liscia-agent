@@ -109,6 +109,26 @@ class LoopGuard:
 
 ARTICLE_RE = re.compile(r"\b(article|source|website|web ?site|web ?page|blog|post|read it|go to (?:a|the) (?:page|site))\b", re.I)
 
+SUMMARIZE_RE = re.compile(r"\b(summari[sz]e|sumari[sz]e|summeri[sz]e|summary of|explain|tell me more about|more (?:details|info) (?:on|about)|"
+                          r"go through|read me|break down)\b.*\b(articles?|those|them|these|stories|story|news|headlines?|items?|"
+                          r"top \d+|each|all|first|links?)\b", re.I)
+PAYWALL_RE = re.compile(r"\b(subscribe to (?:continue|read)|subscribers only|sign in to (?:continue|read)|access denied|verify you are human|"
+                        r"enable javascript|are you a robot|captcha|paywall|already a subscriber|403 forbidden)\b", re.I)
+
+def summarize_targets(task, ctx):
+    """2.3.8: a follow-up about the stories in the previous answer -> those items (N of them), else None."""
+    t = intents.fix_typos(task or "")
+    last = (ctx or {}).get("last") or {}
+    items = last.get("news_items") or []
+    if not items:  # older answers: links in the text
+        items = [{"headline": "", "outlet": "", "href": u.rstrip(").,")} for u in re.findall(r"https?://\S+", last.get("result") or "")]
+    if not items or not SUMMARIZE_RE.search(t): return None
+    if re.search(r"\b(search|google|look up)\b", t, re.I) and not re.search(r"\b(those|these|them|above|you (?:found|listed|gave))\b", t, re.I):
+        return None
+    n = intents.requested_count(t) or len(items)
+    if re.search(r"\b(?:the\s+)?(first|1st)\s+(?:one|article|story)\b", t, re.I): n = 1
+    return items[:n]
+
 def split_followon(task):
     """'search the top 10 fastest cars then open github in a new tab then xbox' -> ('search the top 10 fastest cars', 'open github ... then xbox')."""
     parts = re.split(r"\s*,?\s*\b(?:and\s+)?then\b\s*(?=(?:can you\s+|please\s+|in a new tab\s+)?(?:open|go to|launch|take me to|visit|in a new tab|on a new tab))", task, maxsplit=1, flags=re.I)
@@ -243,6 +263,38 @@ class Agent:
         except ValueError:
             return (raw or "").strip() if raw and "{" not in raw else ""
         return "" if obj.get("need_more") and not obj.get("answer") else tidy_answer(obj.get("answer"))
+
+    SUM_SYSTEM = ("Summarize this news article in 2-3 plain sentences using ONLY facts in the text. No preamble, no bullet points. "
+                  "If the text is a paywall, cookie wall, error page or has no article, reply exactly: NO_ARTICLE")
+
+    def summarize_articles(self, items, logf):
+        """2.3.8: open each listed article (in the agent's tab), read it, summarize it; headline fallback when blocked."""
+        import webagent
+        link, out = self.link(), []
+        try: start = (link.call("snapshot", max=5) or {}).get("url", "")
+        except Exception: start = ""
+        for i, it in enumerate(items):
+            if getattr(self.kill, "killed", False): break
+            href, head = it.get("href", ""), it.get("headline", "")
+            outlet = it.get("outlet") or webagent.outlet_of(href)
+            self.log(f"[web] reading article {i + 1}/{len(items)}: {(head or href)[:60]}")
+            summ, note = "", ""
+            try:
+                webagent.nav(link, href, self.log); time.sleep(2.5)
+                text = webagent.main_text(link, 6000)
+                if len(text) < 500 or (PAYWALL_RE.search(text[:1500]) and len(text) < 2500): note = "the page was paywalled or blocked"
+                else:
+                    summ = (self.client.text_chat([{"role": "system", "content": self.SUM_SYSTEM},
+                                                   {"role": "user", "content": f"HEADLINE: {head}\nARTICLE TEXT:\n{text}"}], num_predict=300) or "").strip()
+                    if "NO_ARTICLE" in summ or len(summ) < 20: summ, note = "", "I couldn't read the article text"
+            except Exception as e: note = f"I couldn't open it ({type(e).__name__})"
+            if not summ: summ = f"({note.capitalize() if note else 'No text'} - only the headline is available.)"
+            logf.write(json.dumps({"summary": {"n": i + 1, "href": href, "chars": len(summ), "note": note}}) + "\n")
+            out.append(f"{i + 1}. {head or outlet} ({outlet})\n   {tidy_answer(summ)}\n   {href}")
+        try:
+            if start: webagent.nav(link, start, self.log)
+        except Exception: pass
+        return "\n\n".join(out) or "I couldn't open those articles."
 
     def answer_question(self, link, question, logf, max_pages=3, article=False, count=0):
         """Read the results page; answer. If it isn't enough (or a list is short, or the user wants an article), open the best
@@ -551,13 +603,14 @@ class Agent:
         if getattr(self, "chat_id", None): logf.write(json.dumps({"chat_id": self.chat_id}) + "\n")
         logf.write(json.dumps({"task": task}) + "\n")
         history, result, notes = [], "max steps reached", []
+        self._turn_news = None
         guard = LoopGuard(a_cfg.get("loop_warn", 2), a_cfg.get("loop_block", 3), a_cfg.get("loop_stop", 5))
         prev_hash, last_idx, force_look = None, None, False
         bad_streak, last_bad = 0, None
         opens = {}; same_clicks, last_click = 0, None; blocked_opens = 0
         norm = uses_norm_coords(self.cfg)
         system = NORM_SYSTEM if norm else SYSTEM
-        ctx = getattr(self, "chat_ctx", None)
+        ctx = getattr(self, "chat_ctx", None); self._raw_task = task
         try:  # 2.0.1: follow-ups and corrections use the chat context
             import followups
             new_task, why = followups.resolve(task, ctx)
@@ -566,6 +619,7 @@ class Agent:
         except Exception as e:
             self.log(f"[chat] follow-up check skipped ({type(e).__name__})")
         orig_task = task
+        raw_task = getattr(self, "_raw_task", task)
         self.kill.start(); self.log(f"Task: {task}\nRun folder: {run_dir}\nAbort: Esc/F12, STOP, or slam mouse into a screen corner.")
         intents.STATE["named"] = intents.named_browser(task)
         # PLAN: one fast model call (validated by code) decides what kind of task this is
@@ -609,7 +663,12 @@ class Agent:
             self.last_task_meta = {"task": task, "intent": pl.get("intent"), "query": pl.get("query") or "", "site": pl.get("site") or "",
                                    "app": pl.get("app") or "", "result": str(result)[:300]}
             if getattr(self, "last_played", None): self.last_task_meta["played"] = self.last_played
+            if getattr(self, "_turn_news", None): self.last_task_meta["news_items"] = self._turn_news
             self.kill.stop(); logf.close(); self.log(f"Result: {result}"); return result
+        prev = summarize_targets(raw_task, ctx) or summarize_targets(orig_task, ctx)
+        if prev and ext_ok:  # 2.3.8: "summarize the top 5 articles" = open the ones I just listed, not a new search
+            try: return finish(self.summarize_articles(prev, logf))
+            except Exception as e: logf.write(json.dumps({"summarize_error": str(e)}) + "\n")
         if pl["intent"] == "account_summary":
             if not ext_ok:
                 return finish("stopped: this needs the Chrome extension to read GitHub. Open Chrome with the Liscia Agent panel, then ask again.")
@@ -692,6 +751,8 @@ class Agent:
                     q2 = " ".join(q2.split()); q2 = q2 if re.search(r"\bnews\b", q2, re.I) else (q2 + " news").strip()
                     q = q2 if re.search(r"\b(latest|today|top|breaking|recent)\b", q2, re.I) else "latest " + q2
                     url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
+                if news and not re.search(r"\b20\d\d\b", orig_task):  # 2.3.8: "right now" = latest; never pin the year
+                    q = " ".join(re.sub(r"\b20\d\d\b", " ", q).split()); url = "https://www.google.com/search?q=" + urllib.parse.quote_plus(q)
                 if news: url += "&tbm=nws"  # 2.3.3: news results list the outlet and time for every story
                 webagent.nav(self.link(), url, self.log); logf.write(json.dumps({"web_fast": {"action": "open_url", "url": url}}) + "\n")
                 question = q if (orig_task != task or len(first.split()) < 5 or followups.is_retry(orig_task, ctx)) else first
@@ -703,8 +764,8 @@ class Agent:
                 items = []
                 if news:  # 2.3.5: news = headlines + outlets straight from Google News results, distinct outlets first
                     try:
-                        time.sleep(1.5); items = webagent.news_list(self.link().call("snapshot", max=200) or {}, pl.get("count") or 4)
-                        logf.write(json.dumps({"news_items": items}) + "\n")
+                        time.sleep(1.5); allit = webagent.news_list(self.link().call("snapshot", max=200) or {}, 10); items = allit[:pl.get("count") or 4]
+                        logf.write(json.dumps({"news_items": items}) + "\n"); self._turn_news = allit  # extras let "summarize the top 5" work after a 4-item list
                     except Exception as e:
                         logf.write(json.dumps({"news_error": str(e)}) + "\n")
                 if len(items) >= min(pl.get("count") or 4, 3):

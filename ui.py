@@ -77,16 +77,38 @@ def style_tabs(st):
     st.configure("R.TNotebook.Tab", background=BG, foreground=DIM, font=FONT, padding=(10, 4), bordercolor=LINE)
     st.map("R.TNotebook.Tab", background=[("selected", FG)], foreground=[("selected", BG)])
 
-class FlatButton(tk.Label):
-    """A themable button (macOS's native tk.Button ignores colours and draws white). Same API: command=, state=."""
+class FlatButton(tk.Frame):
+    """A themable button. 2.3.8: the border is a 1px Frame around a plain Label. Tk on macOS draws a Label's own highlight
+    ring offset from its text (cut corners, label below the box, worse at bigger fonts), so Labels get no highlight at all.
+    Same API as before: command=, state=, text=, fg=, configure/cget, invoke()."""
+    _LABEL_KEYS = {"text", "state", "fg", "foreground", "font", "cursor", "disabledforeground", "anchor", "padx", "pady", "width", "textvariable"}
     def __init__(self, parent, text="", command=None, fg=None, bg=None, font=None, state="normal", activebackground=None,
                  activeforeground=None, highlightbackground=None, highlightthickness=1, **_):
-        super().__init__(parent, text=text, fg=fg or FG, bg=bg or BG, font=font or FONT, cursor="hand2", padx=8, pady=3,
-                         highlightbackground=highlightbackground or LINE, highlightthickness=highlightthickness, disabledforeground=LINE, state=state)
+        self._line = highlightbackground or LINE; self._bw = max(0, int(highlightthickness))
+        super().__init__(parent, bg=self._line if self._bw else (bg or BG), highlightthickness=0, bd=0)
+        self.lbl = tk.Label(self, text=text, fg=fg or FG, bg=bg or BG, font=font or FONT, cursor="hand2", padx=8, pady=3,
+                            highlightthickness=0, bd=0, disabledforeground=LINE, state=state)
+        self.lbl.pack(fill="both", expand=True, padx=self._bw, pady=self._bw)
         self._cmd = command
-        self.bind("<Button-1>", lambda e: self._cmd() if self._cmd and str(self.cget("state")) != "disabled" else None)
-        self.bind("<Enter>", lambda e: str(self.cget("state")) != "disabled" and self.configure(highlightbackground=self.cget("fg")))
-        self.bind("<Leave>", lambda e: self.configure(highlightbackground=LINE))
+        for w in (self, self.lbl):
+            w.bind("<Button-1>", lambda e: self._cmd() if self._cmd and str(self.lbl.cget("state")) != "disabled" else None)
+            w.bind("<Enter>", lambda e: str(self.lbl.cget("state")) != "disabled" and tk.Frame.configure(self, bg=self.lbl.cget("fg")))
+            w.bind("<Leave>", lambda e: tk.Frame.configure(self, bg=self._line))
+    def configure(self, cnf=None, **kw):
+        if cnf: kw.update(cnf)
+        lk = {k: v for k, v in kw.items() if k in self._LABEL_KEYS}
+        if "highlightbackground" in kw: self._line = kw.pop("highlightbackground"); kw["bg"] = self._line
+        fk = {k: v for k, v in kw.items() if k not in self._LABEL_KEYS and k not in ("activebackground", "activeforeground", "highlightthickness")}
+        if "bg" in fk and fk["bg"] != self._line and not ("highlightbackground" in kw):
+            self.lbl.configure(bg=fk.pop("bg"))  # a plain bg= colours the face, not the border
+        if "background" in fk: self.lbl.configure(bg=fk.pop("background"))
+        if lk: self.lbl.configure(**lk)
+        if fk: tk.Frame.configure(self, **fk)
+    config = configure
+    def cget(self, key):
+        if key in self._LABEL_KEYS: return self.lbl.cget(key)
+        if key == "highlightbackground": return self._line
+        return tk.Frame.cget(self, key)
     def invoke(self):
         if self._cmd: self._cmd()
 
@@ -429,7 +451,7 @@ class ChatApp:
         settings.defaults(cfg)
         self.cfg = cfg; self.q = queue.Queue(); self.busy = False; self.agent = None
         self.spin_i = 0; self.status_text = "READY"; self.live = ""
-        self.store = store or chats.store(); self.chat_ids = []
+        self.store = store or chats.store(); self.store.current_ids = []
         self.store.listeners.append(lambda what, cid: self.q.put(("chats_changed", (what, cid))))
         r = self.root = root or tk.Tk()
         global FONT
@@ -473,6 +495,7 @@ class ChatApp:
                               highlightthickness=1, highlightbackground=LINE, highlightcolor=FG)
         self.entry.pack(side="left", fill="x", expand=True, padx=6, ipady=4)
         self.entry.bind("<Return>", lambda e: self.send()); self.entry.focus_set()
+        self._bind_history()
         self.log.pack(fill="both", expand=True, padx=8, pady=6, before=self.status)  # packed last so input row always shows
         r.bind("<F12>", lambda e: self.stop()); r.bind("<Command-period>", lambda e: self.stop())
         r.bind("<Control-n>", lambda e: self.new_chat()); r.bind("<Command-n>", lambda e: self.new_chat())
@@ -481,6 +504,55 @@ class ChatApp:
         overlay.HOOK = lambda x, y: self.q.put(("ring", (x, y)))
         self._tick()
         threading.Thread(target=self._preload, daemon=True).start()
+
+    # ---------------- 2.3.8: terminal-style input ----------------
+    def _bind_history(self):
+        import inputhist
+        try: hp = os.path.join(os.path.dirname(self.store.dir), "input_history.json")
+        except Exception: hp = os.path.join(os.path.expanduser("~"), ".liscia_input_history.json")
+        self.hist = inputhist.History(hp); self._rsearch = None
+        e = self.entry
+        def setv(t):
+            if t is None: return "break"
+            e.delete(0, "end"); e.insert(0, t); e.icursor("end"); return "break"
+        def cid():
+            try: return self.store.current_id
+            except Exception: return None
+        e.bind("<Up>", lambda ev: setv(self.hist.up(e.get(), cid())))
+        e.bind("<Down>", lambda ev: setv(self.hist.down(e.get(), cid())))
+        e.bind("<Escape>", lambda ev: (e.delete(0, "end"), self.hist.reset(), self._end_rsearch(), "break")[-1])
+        e.bind("<Control-l>", lambda ev: (self.clear_view(), "break")[-1])
+        e.bind("<Tab>", lambda ev: self._complete())
+        e.bind("<Control-r>", lambda ev: self._reverse_search())
+        e.bind("<Key>", lambda ev: self._typed(ev), add="+")
+
+    def _typed(self, ev):
+        if ev.keysym not in ("Up", "Down", "Return", "Escape", "Tab") and not (ev.state & 0x4 and ev.keysym in ("r", "l")):
+            if self._rsearch is not None: self._end_rsearch()
+
+    def _complete(self):
+        import inputhist
+        t, cands = inputhist.complete(self.entry.get())
+        if t != self.entry.get(): self.entry.delete(0, "end"); self.entry.insert(0, t); self.entry.icursor("end")
+        elif len(cands) > 1: self.q.put(("status", "  ".join(cands)))
+        return "break"
+
+    def _reverse_search(self):
+        """Ctrl+R: the box text is the search; each press finds an older match (status line shows it)."""
+        if self._rsearch is None: self._rsearch = self.entry.get()
+        hit = self.hist.search(self._rsearch, self.store.current_id, older=self.hist.search_from is not None)
+        if hit is not None:
+            self.entry.delete(0, "end"); self.entry.insert(0, hit); self.entry.icursor("end")
+            self.status.config(text=f"(reverse-i-search)`{self._rsearch}': {hit[:60]}   Ctrl+R older, Esc cancel")
+        else: self.status.config(text=f"(failed reverse-i-search)`{self._rsearch}'")
+        return "break"
+
+    def _end_rsearch(self):
+        self._rsearch = None; self.hist.search_from = None
+
+    def clear_view(self):
+        """Ctrl+L: clear what's on screen (the chat and the input history are kept)."""
+        self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled"); self.grp = None
 
     INTRO = ("SYSTEM READY. Chat normally, or ask me to do something on your PC.\n"
              "Tips: '/new' new chat, '/settings' models & providers, '/do <task>' forces computer control, '/chat <msg>' plain chat, "
@@ -491,12 +563,12 @@ class ChatApp:
     def chat_id(self): return self.store.current()["id"]
 
     def refresh_chats(self):
-        lst = self.store.list(); self.chat_ids = [c["id"] for c in lst]
+        lst = self.store.list(); self.store.current_ids = [c["id"] for c in lst]
         self.chat_list.delete(0, "end")
         for c in lst: self.chat_list.insert("end", " " + c["title"])
         cur = self.store.current_id
-        if cur in self.chat_ids:
-            i = self.chat_ids.index(cur); self.chat_list.selection_clear(0, "end"); self.chat_list.selection_set(i); self.chat_list.see(i)
+        if cur in self.store.current_ids:
+            i = self.store.current_ids.index(cur); self.chat_list.selection_clear(0, "end"); self.chat_list.selection_set(i); self.chat_list.see(i)
 
     def show_chat(self, c):
         self.log.config(state="normal"); self.log.delete("1.0", "end"); self.log.config(state="disabled")
@@ -509,13 +581,13 @@ class ChatApp:
 
     def new_chat(self):
         if self.busy: self.write("warn", "Busy - press STOP first, or wait."); return
-        c = self.store.new(); self.refresh_chats(); self.show_chat(c); self.entry.focus_set()
+        c = self.store.new_or_reuse(); self.refresh_chats(); self.show_chat(c); self.entry.focus_set()
 
     def _pick_chat(self):
         sel = self.chat_list.curselection()
-        if not sel or self.chat_ids[sel[0]] == self.store.current_id: return
+        if not sel or self.store.current_ids[sel[0]] == self.store.current_id: return
         if self.busy: self.refresh_chats(); self.write("warn", "Busy - finish or STOP the current task before switching chats."); return
-        self.show_chat(self.store.select(self.chat_ids[sel[0]]))
+        self.show_chat(self.store.select(self.store.current_ids[sel[0]]))
 
     def rename_chat(self):
         c = self.store.current(); name = retro_prompt(self.root, "RENAME CHAT", c["title"])
@@ -664,7 +736,7 @@ class ChatApp:
             elif kind == "busy": self._set_busy(True)
             elif kind == "chats_changed":
                 what, cid = val
-                if what in ("list", "current") or (what == "message" and cid not in self.chat_ids): self.refresh_chats()
+                if what in ("list", "current") or (what == "message" and cid not in self.store.current_ids): self.refresh_chats()
                 elif what == "message":
                     self.refresh_chats()
                     if cid == self.store.current_id and not self.busy:
@@ -703,6 +775,8 @@ class ChatApp:
     def send(self):
         text = self.entry.get().strip()
         if not text or self.busy: return
+        try: self.hist.add(text, self.store.current_id)
+        except Exception: pass
         low = text.lower().split()[0]
         if low in ("/new", "/newchat", "/clear"): self.entry.delete(0, "end"); self.new_chat(); return
         if low in ("/settings", "/models", "/model"): self.entry.delete(0, "end"); self.open_settings(); return
@@ -718,7 +792,7 @@ class ChatApp:
         self.root.clipboard_clear(); self.root.clipboard_append(text); self.root.update()
 
     def _work(self, text):
-        cid = self.chat_id
+        cid = self.store.current_id
         try:
             history = self.store.history(cid); ctx = self.store.context(cid)
             self.store.add(cid, "user", text)

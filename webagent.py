@@ -428,12 +428,71 @@ OUTLETS = {"foxnews": "Fox News", "cnn": "CNN", "bbc": "BBC", "nytimes": "The Ne
            "hindustantimes": "Hindustan Times", "ndtv": "NDTV", "timesofindia": "The Times of India", "indiatimes": "The Times of India", "thehindu": "The Hindu",
            "yahoo": "Yahoo News", "msn": "MSN", "skynews": "Sky News", "news.sky": "Sky News", "latimes": "Los Angeles Times", "nypost": "New York Post"}
 
+NOT_NEWS_RE = re.compile(r"\b(for school assembly|podcast|podcasts|ranking of|rankings|top \d+ news (?:sites|websites|apps|channels)|news websites|newsletter sign|"
+                        r"subscribe|live tv|watch live|e-?paper|quiz|crossword|horoscope|wordle|how to watch|audio briefing)\b", re.I)
+SUFFIXES = ["Magazine", "The Indian Express", "Indian Express", "WSJ", "The Seattle Times", "Reuters", "AP News", "BBC News", "CNN", "NDTV",
+            "Hindustan Times", "The Hindu", "Times of India", "The Times of India", "India Today", "Mint", "Livemint", "Moneycontrol",
+            "The Economic Times", "Economic Times", "News18", "Firstpost", "Business Standard", "The Print", "ThePrint", "Scroll.in", "The Wire",
+            "Al Jazeera", "The Guardian", "Bloomberg", "Forbes", "Yahoo News", "MSN", "Fox News", "NBC News", "CBS News", "ABC News", "NPR",
+            "The New York Times", "The Washington Post", "Los Angeles Times", "USA Today", "Politico", "Axios", "CNBC", "Deccan Herald", "WION"]
+WORDS = ["chicago", "tribune", "seattle", "times", "indian", "express", "economic", "business", "standard", "deccan", "herald", "daily",
+         "news", "post", "washington", "york", "boston", "globe", "morning", "evening", "star", "india", "today", "hindustan", "mail",
+         "telegraph", "guardian", "journal", "street", "wall", "free", "press", "money", "control", "live", "mint", "first", "chronicle",
+         "san", "francisco", "angeles", "denver", "miami", "dallas", "houston", "detroit", "examiner", "sun", "observer", "national", "world",
+         "report", "insider", "week", "wire", "print", "gazette", "review", "statesman", "pioneer", "tribune", "deccan", "the", "new", "la"]
+
+def split_words(base):
+    """'chicagotribune' -> 'Chicago Tribune' (greedy known-word split; falls back to Capitalized)."""
+    s, out = base.lower(), []
+    while s:
+        for wd in sorted(set(WORDS), key=len, reverse=True):
+            if s.startswith(wd) and len(wd) >= 2: out.append(wd); s = s[len(wd):]; break
+        else: return base.capitalize()
+    return " ".join(x.capitalize() for x in out).replace("Ny ", "NY ")
+
+def clean_headline(lab, outlet):
+    """Strip outlet names glued to the front/back, time stamps and trailing snippet text."""
+    lab = " ".join((lab or "").split())
+    lab = re.sub(r"\s*\b\d+\s+(?:minutes?|mins?|hours?|days?|weeks?|months?)\s+ago\b.*$", "", lab, flags=re.I)
+    lab = re.sub(r"^[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|in|co\.uk|co\.in|tv)\b\s*[-:|.]?\s*(?:Video\.\s*)?", "", lab, flags=re.I).strip(" .-|")
+    names = sorted(set(SUFFIXES + [outlet, re.sub(r"^The ", "", outlet)]), key=len, reverse=True)
+    for _ in range(2):
+        for nm in names:
+            if not nm: continue
+            lab = re.sub(r"^(?:[\w.]+\.(?:com|org|net|in|co\.uk|co\.in|tv)\s*)?" + re.escape(nm) + r"(?=[A-Z\s:|.-])\s*[-:|.]?\s*(?:Video\.\s*)?", "", lab).strip(" .-|")
+            lab = re.sub(r"\s*[-|:]?\s*" + re.escape(nm) + r"$", "", lab).strip(" .-|")
+    return split_snippet(lab)[0]
+
+def split_snippet(lab):
+    """Google News link text = headline + snippet. Cut where the snippet starts: a glued capital ('textThe'), an opening quote,
+    a repeated word ('bids Bids for'), a known lead-in ('Today's top news:', '1-'), or a sentence end after the headline."""
+    words, cut = lab.split(" "), None
+    for i in range(4, len(words)):
+        w0, w1, pre = words[i - 1], words[i], " ".join(words[:i])
+        if len(pre) < 20: continue
+        nxt = words[i + 1].lower() if i + 1 < len(words) else ""
+        if re.match(r'^["“]', w1) or (w1[:1].isupper() and w1.lower() in {x.lower().strip(",.:") for x in words[max(0, i - 3):i]}) \
+           or re.match(r"^(?:(?:Today'?s|Good|Here'?s|Watch|Listen)\b|1-)", w1) and len(pre) > 25 \
+           or len(pre) >= 35 and w0[:1].islower() and re.match(r"^(The|A|An|In|On|At|After|As|It|This|Officials|Police)$", w1) \
+           or len(pre) >= 35 and w0[:1].islower() and w1[:1].isupper() and nxt in ("says", "said", "has", "have", "is", "was", "will", "on", "to") \
+           or re.search(r"[.!?]$", w0) and w1[:1].isupper():
+            cut = i; break
+    if cut is None:
+        m = re.search(r"[a-z0-9'\")](?=[A-Z][a-z]+\s)", lab)
+        if m and m.start() >= 25: return lab[:m.start() + 1].strip(" .-|:"), lab[m.start() + 1:]
+        return lab.strip(" .-|"), ""
+    return " ".join(words[:cut]).strip(" .-|:"), " ".join(words[cut:])
+
+def _unused():
+    if len(lab) > 140: lab = lab[:140].rsplit(" ", 1)[0] + "…"
+    return lab.strip(" .-|")
+
 def outlet_of(href):
     host = re.sub(r"^https?://", "", href or "").split("/")[0].lower(); host = re.sub(r"^(www|m|amp|edition|news)\.", "", host)
     for k, v in OUTLETS.items():
         if host.startswith(k + ".") or host == k or ("." + k + ".") in "." + host: return v
     base = host.split(".")[0] if host.count(".") <= 1 else host.split(".")[-2]
-    return base.upper() if len(base) <= 4 else base.capitalize()
+    return base.upper() if len(base) <= 4 else split_words(base)
 
 def news_list(snap, n=4):
     """Google News results -> [{'headline','outlet','href'}], one story per outlet first (then repeats if needed)."""
@@ -445,10 +504,10 @@ def news_list(snap, n=4):
         if re.search(r"(^|\.)google\.|gstatic\.|googleusercontent\.|youtube\.com$|webcache|support\.|accounts\.", host): continue
         lab = " ".join((e.get("label") or "").split())
         out = outlet_of(h)
-        lab = re.sub(r"\s*\b\d+\s+(?:minutes?|mins?|hours?|days?|weeks?)\s+ago\b.*$", "", lab, flags=re.I).strip(" .-|")
-        lab = re.sub(r"^(?:[\w.]+\.(?:com|org|net|co\.uk|tv)|" + re.escape(out) + r")\s*[-:|.]?\s*(?:Video\.\s*)?", "", lab, flags=re.I).strip(" .-|")
-        if len(lab.split()) < 4 or lab.lower() in seen_h: continue
-        seen_h.add(lab.lower()); items.append({"headline": lab[:160], "outlet": out, "href": h})
+        lab0 = " ".join(lab.split()); lab = clean_headline(lab, out)
+        snip = lab0[lab0.find(lab) + len(lab):].strip(" .-|:") if lab and lab in lab0 else ""
+        if len(lab.split()) < 4 or lab.lower() in seen_h or NOT_NEWS_RE.search(lab): continue
+        seen_h.add(lab.lower()); items.append({"headline": lab[:160], "outlet": out, "href": h, "snippet": snip[:300]})
     first, rest, outs = [], [], set()
     for it in items:
         (rest if it["outlet"] in outs else first).append(it); outs.add(it["outlet"])

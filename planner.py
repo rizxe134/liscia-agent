@@ -58,6 +58,7 @@ def file_outputs(task):
 
 def with_year(q, task):
     y = str(today().year)
+    if re.search(r"\b(news|headlines?|breaking)\b", (q or "") + " " + (task or ""), re.I): return q  # 2.3.8: news is already the latest
     if q and RECENT_RE.search(task or "") and not re.search(r"\b20\d\d\b", q): return f"{q} {y}"
     return q
 
