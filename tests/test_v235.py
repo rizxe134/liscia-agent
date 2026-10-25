@@ -45,3 +45,18 @@ class Tracing235(unittest.TestCase):
         self.assertIn("429", e["fallback_reason"])
         cloud.text_chat.side_effect = None; cloud.text_chat.return_value = "hi"; c.text_chat([{"role": "user", "content": "y"}])
         self.assertFalse(evs[1]["fallback"]); self.assertNotIn("key", str(evs).lower())
+
+class KeyCache236(unittest.TestCase):
+    def test_keychain_read_once(self):
+        import keystore
+        kr = mock.Mock(); kr.get_password.return_value = "secret-value"
+        keystore._backend = kr; keystore.clear_cache()
+        try:
+            for _ in range(5): self.assertEqual(keystore.get("gemini"), "secret-value")
+            self.assertEqual(kr.get_password.call_count, 1)
+            keystore.set("gemini", "new"); self.assertEqual(keystore.get("gemini"), "new"); self.assertEqual(kr.get_password.call_count, 1)
+        finally:
+            keystore._backend = None; keystore.clear_cache()
+    def test_build_uses_stable_identity(self):
+        s = open(os.path.join(os.path.dirname(__file__), "..", "scripts", "build_mac_dmg.sh")).read()
+        self.assertIn("Liscia Agent Local Signing", s); self.assertIn("--identifier local.liscia.agent", s)

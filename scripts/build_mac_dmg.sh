@@ -3,7 +3,7 @@
 # Usage: scripts/build_mac_dmg.sh   -> dist/Liscia-Agent-<ver>-macos-arm64.dmg
 set -euo pipefail
 cd "$(dirname "$0")/.."
-VER="${VERSION:-2.3.6}"
+VER="${VERSION:-2.3.7}"
 PY="${PYTHON:-python3}"
 [ -d build/venv ] || "$PY" -m venv build/venv
 build/venv/bin/pip install -q -r requirements.txt pyinstaller
@@ -18,7 +18,17 @@ iconutil -c icns "$SET" -o build/AppIcon.icns
 rm -rf "dist/Liscia Agent.app" "dist/Liscia Agent"
 build/venv/bin/pyinstaller --noconfirm --clean liscia_agent.spec
 APP="dist/Liscia Agent.app"
-codesign --force --deep --sign - "$APP"          # ad-hoc signature
+# 2.3.6: sign with a STABLE local identity so the Keychain "Always Allow" for the API key survives updates
+# (ad-hoc signatures change with every build, so macOS asks for the login password again). Falls back to ad-hoc.
+SIGN_ID="${SIGN_IDENTITY:-Liscia Agent Local Signing}"
+SIGN_HASH=$(security find-identity -p codesigning 2>/dev/null | grep "\"$SIGN_ID\"" | head -1 | awk '{print $2}')
+if [ -n "$SIGN_HASH" ]; then
+  codesign --force --deep --sign "$SIGN_HASH" --identifier local.liscia.agent "$APP"
+  echo "signed with \"$SIGN_ID\" ($SIGN_HASH)"
+else
+  echo "WARNING: no \"$SIGN_ID\" code-signing identity in the keychain - ad-hoc signing (Keychain will ask again after updates)"
+  codesign --force --deep --sign - "$APP"
+fi
 codesign --verify --deep --strict "$APP" && echo "codesign ok"
 STAGE=build/dmg; rm -rf "$STAGE"; mkdir -p "$STAGE"
 cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"

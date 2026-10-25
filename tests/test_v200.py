@@ -47,9 +47,9 @@ class ChatStoreCRUD(unittest.TestCase):
 
 class SettingsKeys(unittest.TestCase):
     def setUp(self):
-        keystore._backend = FakeKR()
+        keystore._backend = FakeKR(); keystore.clear_cache()
         self.cfg = yaml.safe_load(open(os.path.join(os.path.dirname(__file__), "..", "config.yaml")))
-    def tearDown(self): keystore._backend = None
+    def tearDown(self): keystore._backend = None; keystore.clear_cache()
     def test_save_load_and_keys_never_on_disk(self):
         key = "sk-test-SECRET-1234567890abcdef"
         settings.apply(self.cfg, {"provider": "openai", "text_model": "gpt-4.1-mini", "vision_model": "gpt-4.1", "keys": {"openai": key}})
