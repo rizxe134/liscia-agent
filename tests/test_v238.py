@@ -1,4 +1,4 @@
-import os, tkinter as tk, pytest
+import os, tempfile, unittest, tkinter as tk
 import inputhist, chats
 
 def test_history_nav_keeps_draft(tmp_path):
@@ -34,10 +34,11 @@ def test_new_chat_reuses_empty(tmp_path):
     a = s.new_or_reuse(); b = s.new_or_reuse()
     assert a["id"] == b["id"] and len(s.list()) == 1
 
-@pytest.mark.parametrize("size", [10, 16, 22])
-def test_flatbutton_frame_border(size):
-    import ui
-    r = tk.Tk()
+def test_flatbutton_frame_border(tmp_path=None):
+  import ui
+  for size in (10, 16, 22):
+    try: r = tk.Tk()
+    except tk.TclError: raise unittest.SkipTest("no display")
     try:
         hits = []
         b = ui.FlatButton(r, text="[ + NEW CHAT ]", command=lambda: hits.append(1), font=("Courier", size)); b.pack()
@@ -69,3 +70,18 @@ def test_summarize_targets_uses_previous_items():
     assert len(core.summarize_targets("explain those", ctx)) == 7
     assert core.summarize_targets("search for new articles about cricket", ctx) is None
     assert core.summarize_targets("summarize the top 5 articles", {"last": {}}) is None
+
+
+class _Wrapped(unittest.TestCase):
+    pass
+
+def _mk(fn):
+    def t(self):
+        import inspect, pathlib, tempfile
+        if "tmp_path" in inspect.signature(fn).parameters:
+            with tempfile.TemporaryDirectory() as d: fn(pathlib.Path(d))
+        else: fn()
+    return t
+
+for _n, _f in list(globals().items()):
+    if _n.startswith("test_") and callable(_f): setattr(_Wrapped, _n, _mk(_f)); del globals()[_n]
