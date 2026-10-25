@@ -439,7 +439,7 @@ WORDS = ["chicago", "tribune", "seattle", "times", "indian", "express", "economi
          "news", "post", "washington", "york", "boston", "globe", "morning", "evening", "star", "india", "today", "hindustan", "mail",
          "telegraph", "guardian", "journal", "street", "wall", "free", "press", "money", "control", "live", "mint", "first", "chronicle",
          "san", "francisco", "angeles", "denver", "miami", "dallas", "houston", "detroit", "examiner", "sun", "observer", "national", "world",
-         "report", "insider", "week", "wire", "print", "gazette", "review", "statesman", "pioneer", "tribune", "deccan", "the", "new", "la"]
+         "report", "insider", "irish", "golfer", "golf", "sports", "sport", "cricket", "tech", "crunch", "verge", "week", "wire", "print", "gazette", "review", "statesman", "pioneer", "tribune", "deccan", "the", "new", "la"]
 
 def split_words(base):
     """'chicagotribune' -> 'Chicago Tribune' (greedy known-word split; falls back to Capitalized)."""
@@ -455,6 +455,11 @@ def clean_headline(lab, outlet):
     lab = " ".join((lab or "").split())
     lab = re.sub(r"\s*\b\d+\s+(?:minutes?|mins?|hours?|days?|weeks?|months?)\s+ago\b.*$", "", lab, flags=re.I)
     lab = re.sub(r"^[\w-]+(?:\.[\w-]+)*\.(?:com|org|net|in|co\.uk|co\.in|tv)\b\s*[-:|.]?\s*(?:Video\.\s*)?", "", lab, flags=re.I).strip(" .-|")
+    if outlet:  # "Irish Golfer Magazine Byrne slips..." -> drop the outlet words at the front however they're spaced
+        ws, key = lab.split(" "), re.sub(r"[^a-z]", "", outlet.lower())
+        for k in range(1, min(5, len(ws))):
+            if re.sub(r"[^a-z]", "", "".join(ws[:k]).lower()) in (key, re.sub(r"^the", "", key)):
+                lab = re.sub(r"^(?:Magazine|News|Video|Live)\b\.?\s*", "", " ".join(ws[k:])); break
     names = sorted(set(SUFFIXES + [outlet, re.sub(r"^The ", "", outlet)]), key=len, reverse=True)
     for _ in range(2):
         for nm in names:
@@ -472,16 +477,21 @@ def split_snippet(lab):
         if len(pre) < 20: continue
         nxt = words[i + 1].lower() if i + 1 < len(words) else ""
         if re.match(r'^["“]', w1) or (w1[:1].isupper() and w1.lower() in {x.lower().strip(",.:") for x in words[max(0, i - 3):i]}) \
+           or len(pre) >= 35 and w0[:1].islower() and w1[:1].isupper() and w1 in [x.strip(",.:'’s") for x in words[:i - 1]] \
            or re.match(r"^(?:(?:Today'?s|Good|Here'?s|Watch|Listen)\b|1-)", w1) and len(pre) > 25 \
            or len(pre) >= 35 and w0[:1].islower() and re.match(r"^(The|A|An|In|On|At|After|As|It|This|Officials|Police)$", w1) \
            or len(pre) >= 35 and w0[:1].islower() and w1[:1].isupper() and nxt in ("says", "said", "has", "have", "is", "was", "will", "on", "to") \
            or re.search(r"[.!?]$", w0) and w1[:1].isupper():
             cut = i; break
+    if cut is None and len(lab) >= 70:  # the link text was cut off mid-snippet: drop the dangling snippet start
+        for i in range(len(words) - 1, 4, -1):
+            if len(" ".join(words[:i])) >= 35 and words[i - 1][:1].islower() and words[i][:1].isupper(): cut = i; break
     if cut is None:
         m = re.search(r"[a-z0-9'\")](?=[A-Z][a-z]+\s)", lab)
         if m and m.start() >= 25: return lab[:m.start() + 1].strip(" .-|:"), lab[m.start() + 1:]
         return lab.strip(" .-|"), ""
-    return " ".join(words[:cut]).strip(" .-|:"), " ".join(words[cut:])
+    head = re.sub(r"(?:\s+(?:on|of|in|for|the|a|an|and|to|as|with|at|by))+$", "", " ".join(words[:cut]), flags=re.I)
+    return head.strip(" .-|:,"), " ".join(words[cut:])
 
 def _unused():
     if len(lab) > 140: lab = lab[:140].rsplit(" ", 1)[0] + "…"

@@ -280,8 +280,15 @@ class Agent:
             self.log(f"[web] reading article {i + 1}/{len(items)}: {(head or href)[:60]}")
             summ, note = "", ""
             try:
-                webagent.nav(link, href, self.log); time.sleep(2.5)
-                text = webagent.main_text(link, 6000)
+                webagent.nav(link, href, self.log)
+                want = re.sub(r"^https?://(www\.)?", "", href).split("/")[0].lower()
+                for _ in range(12):  # wait for THIS page (a slow previous page must not be read as this one)
+                    time.sleep(1.0)
+                    try: u = (link.call("snapshot", max=3) or {}).get("url", "")
+                    except Exception: u = ""
+                    if want and want in u.lower(): break
+                else: raise TimeoutError("page didn't load")
+                time.sleep(1.5); text = webagent.main_text(link, 6000)
                 if len(text) < 500 or (PAYWALL_RE.search(text[:1500]) and len(text) < 2500): note = "the page was paywalled or blocked"
                 else:
                     summ = (self.client.text_chat([{"role": "system", "content": self.SUM_SYSTEM},
