@@ -6,7 +6,7 @@ VERSION = "3.0.0"
 
 hidden = collect_submodules("pyautogui") + ["pymsgbox", "pytweening", "pyscreeze", "mouseinfo", "pyperclip", "yaml", "mss", "webagent", "extlink", "server", "paths", "slash", "docmaker", "planner", "policy", "appindex", "appui", "winbind", "adapters", "commands", "appfirst", "chats", "settings", "keystore", "providers", "media", "followups", "themes", "creds", "accounts", "ads", "overlay", "modelhub", "inputhist", "bots", "botui", "robot", "connections", "toolhub", "mcphub", "mcpdemo", "jsonschema", "docx", "openpyxl", "pptx", "psutil"]
 hidden += [m for m in collect_submodules("pynput") if ("_darwin" in m if MAC else "_win32" in m if WIN else "_xorg" in m) or m.count(".") <= 1]
-hidden += collect_submodules("mcp") + collect_submodules("anyio") + collect_submodules("httpx") + collect_submodules("pydantic")
+hidden += collect_submodules("mcp", filter=lambda n: not n.startswith("mcp.cli")) + collect_submodules("anyio") + collect_submodules("httpx") + collect_submodules("pydantic")
 hidden += collect_submodules("keyring") + (["win32ctypes", "win32ctypes.core"] if WIN else [])
 if MAC: hidden += ["Quartz", "AppKit", "Foundation", "objc"]
 if WIN: hidden += ["uiautomation", "comtypes", "comtypes.client", "comtypes.stream"] + collect_submodules("comtypes")
