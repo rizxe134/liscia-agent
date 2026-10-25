@@ -120,7 +120,19 @@ class Bridge:
             cid = chat_id if chat_id and st.get(chat_id) else st.current()["id"]
             history = st.history(cid); ctx = st.context(cid); st.add(cid, "user", text)
             ag.chat_id = cid; ag.chat_ctx = ctx
-            kind, out = route(ag.client, text, history, on_token=lambda p: self.hub.emit("token", text=p))
+            kw = {}
+            try:  # 3.0.0: the chat's bot - persona, memory and tools (connections/MCP) work from the panel too
+                import bots, toolhub
+                bot = (st.get(cid) or {}).get("bot") or {}; persona = bots.persona(bot)
+                if self.router is None: kw["persona"] = persona
+                tools = toolhub.bot_tools(self.cfg, bot, st, cid)
+                if toolhub.relevant(text, tools):
+                    reply = toolhub.try_tools(ag.client, text, tools, ag.confirm, persona, history, log=ag.log)
+                    if reply is not None:
+                        st.add(cid, "assistant", reply); self.hub.emit("chat", text=reply); return
+            except Exception as e:
+                self.hub.emit("log", text=f"[tools] skipped ({type(e).__name__})")
+            kind, out = route(ag.client, text, history, on_token=lambda p: self.hub.emit("token", text=p), **kw)
             if kind == "chat":
                 st.add(cid, "assistant", out); self.hub.emit("chat", text=out)
             else:

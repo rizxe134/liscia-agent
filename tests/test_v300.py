@@ -190,3 +190,17 @@ class Mentions(unittest.TestCase):
 
     def test_robot_states(self):
         self.assertNotEqual(robot.frame("classic", look=1), robot.frame("classic"))
+
+class BridgeTools(unittest.TestCase):
+    def test_panel_chat_uses_bot_mcp_tool(self):
+        import server
+        cfg = {"mcp": {"servers": [dict(mcphub.demo_server(), cached=[{"name": "add", "description": "Add two numbers.", "schema": {"type": "object",
+               "properties": {"a": {"type": "number"}, "b": {"type": "number"}}, "required": ["a", "b"]}, "read_only": True}])]}}
+        st = chats.ChatStore(tempfile.mkdtemp()); c = st.new(bot=bots.default_bot("Math"))
+        b = server.Bridge.__new__(server.Bridge); b.cfg = cfg; b._store = st; b.router = lambda *a, **k: ("chat", "router")
+        b.hub = mock.Mock(); b.busy = True
+        ag = mock.Mock(); ag.client.text_chat.side_effect = ['{"tool": "liscia-demo__add", "args": {"a": 2, "b": 3}}', "2 + 3 = 5"]
+        b._get_agent = lambda: ag
+        with mock.patch.object(mcphub, "log_path", return_value=os.path.join(tempfile.mkdtemp(), "l.log")):
+            b._chat("use the mcp add tool for 2 and 3", c["id"])
+        self.assertEqual(st.get(c["id"])["messages"][-1]["content"], "2 + 3 = 5")
