@@ -42,6 +42,21 @@ def rest_of(task, ctx):
     todo = [p for k, p in enumerate(parts) if k not in done]
     return " then ".join(todo) if todo else None
 
+def nothing_left(task, ctx):
+    """'you didn't do the rest' when every step already ran: ('do', 'play X') to finish a search-only step, or ('say', honest summary)."""
+    last = (ctx or {}).get("last") or {}
+    if not REST_RE.search(intents.fix_typos(task or "")) or not last.get("task"): return None
+    parts = last.get("parts") or intents.split_steps(last["task"])
+    res = last.get("part_results") or ([str(last.get("result") or "")] if len(parts) == 1 else [])
+    for p, r in zip(parts, res):
+        m = re.match(r'^\s*Searched YouTube for "([^"]+)"', r)
+        if m: return "do", f"play {m.group(1)} on youtube"
+    if len(parts) < 2: return None
+    short = lambda r: re.sub(r"\s+", " ", r)[:90]
+    done = "; ".join(f"{k + 1}) {p} -> {short(r)}" for k, (p, r) in enumerate(zip(parts, res))) if res else "; ".join(parts)
+    return "say", (f"All {len(parts)} steps of your last request already ran: {done}. "
+                   "Tell me which part isn't right (or what to do next) and I'll redo it.")
+
 def is_retry(task, ctx):
     """'thats the wrong song' / 'try again and search it up' right after a media task -> redo it (deterministically)."""
     last = (ctx or {}).get("last") or {}

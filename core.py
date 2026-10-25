@@ -480,8 +480,14 @@ class Agent:
         try:
             if not getattr(self, "_in_multi", False):
                 try:  # 2.3.3: "you didn't do the rest" -> the unfinished steps of the previous request
-                    rest = followups.rest_of(task, getattr(self, "chat_ctx", None))
+                    ctx0 = getattr(self, "chat_ctx", None)
+                    rest = followups.rest_of(task, ctx0)
                     if rest: self.log(f"[chat] doing the rest of the previous request: {rest}"); task = rest
+                    else:
+                        nothing = followups.nothing_left(task, ctx0)  # 2.3.5: all steps ran -> say so / complete a search-only step
+                        if nothing and nothing[0] == "do": self.log(f"[chat] completing the last step: {nothing[1]}"); task = nothing[1]
+                        elif nothing:
+                            self.last_task_meta = dict((ctx0 or {}).get("last") or {}); return nothing[1]
                 except Exception as e:
                     self.log(f"[chat] rest check skipped ({type(e).__name__})")
                 parts = intents.split_steps(task)
@@ -513,7 +519,7 @@ class Agent:
         finally:
             self._in_multi = False; self._multi_idx = 0
         meta = dict(getattr(self, "last_task_meta", None) or {})
-        meta.update(task=task, parts=parts, done=done, result=" | ".join(r[:140] for r in results)[:300])
+        meta.update(task=task, parts=parts, done=done, part_results=[r[:200] for r in results], result=" | ".join(r[:140] for r in results)[:300])
         self.last_task_meta = meta
         out = "\n\n".join(f"{k + 1}) {r}" for k, r in enumerate(results))
         if len(results) < len(parts): out += f"\n\n(Stopped before: {'; '.join(parts[len(results):])})"
@@ -613,6 +619,8 @@ class Agent:
         except Exception as e:
             self.log(f"[chat] retry check skipped ({type(e).__name__})")
         search_only = (re.search(r"\b(search|look(?:ing)? (?:for|up)|find)\b", task, re.I) and not re.search(r"\b(play|listen|watch|put on|start|hear)\b", task, re.I)
+                       and not (re.search(r"\b(song|songs|music|track|tune|banger|playlist|album)\b", task, re.I)  # 2.3.5: a song request implies playing
+                                and not re.search(r"\bsearch\b", task, re.I))  # ("search youtube for lofi music" stays a search)
                        and not excl and not (ctx or {}).get("media_before") and not (pl.get("intent") == "media_play" and followups.is_retry(task, ctx)))
         nth = None
         try:
@@ -673,7 +681,16 @@ class Agent:
                 if n_items:  # 2.3.3: "4 different news" -> exactly 4 items, each with its source
                     question += f" - give exactly {n_items} separate items as a numbered list, each with its source" + (" (different news outlets if possible)" if news else "")
                     pl["count"] = n_items
-                ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or intents.requested_count(q) or
+                items = []
+                if news:  # 2.3.5: news = headlines + outlets straight from Google News results, distinct outlets first
+                    try:
+                        time.sleep(1.5); items = webagent.news_list(self.link().call("snapshot", max=200) or {}, pl.get("count") or 4)
+                        logf.write(json.dumps({"news_items": items}) + "\n")
+                    except Exception as e:
+                        logf.write(json.dumps({"news_error": str(e)}) + "\n")
+                if len(items) >= min(pl.get("count") or 4, 3):
+                    ans = "\n".join(f"{i + 1}. {it['headline']} ({it['outlet']})" for i, it in enumerate(items))
+                else: ans = self.answer_question(self.link(), question, logf, article=bool(ARTICLE_RE.search(intents.fix_typos(orig_task))), count=pl.get("count") or intents.requested_count(q) or
                                            (intents.requested_count(((ctx or {}).get("last") or {}).get("task", "")) if orig_task != task or len(first.split()) < 6 else 0) or 0)
                 if later:  # 2.3.0: "search X then open github in a new tab then xbox" - do the rest too
                     fixed, rest = intents.plan(later)

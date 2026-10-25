@@ -419,3 +419,37 @@ def run_web(agent, task, history, logf, link=None, max_steps=30, sleep=time.slee
             if isinstance(ans, str) and ans and not ans.startswith("I searched but"): return ans
     except Exception: pass
     return give_up_message(task, history, snap)
+
+
+OUTLETS = {"foxnews": "Fox News", "cnn": "CNN", "bbc": "BBC", "nytimes": "The New York Times", "washingtonpost": "The Washington Post", "reuters": "Reuters",
+           "apnews": "AP News", "nbcnews": "NBC News", "cbsnews": "CBS News", "abcnews": "ABC News", "theguardian": "The Guardian", "euronews": "Euronews",
+           "aljazeera": "Al Jazeera", "npr": "NPR", "usatoday": "USA Today", "wsj": "The Wall Street Journal", "bloomberg": "Bloomberg", "cnbc": "CNBC",
+           "politico": "Politico", "axios": "Axios", "espn": "ESPN", "ktla": "KTLA 5", "fox10phoenix": "FOX 10 Phoenix", "independent": "The Independent",
+           "hindustantimes": "Hindustan Times", "ndtv": "NDTV", "timesofindia": "The Times of India", "indiatimes": "The Times of India", "thehindu": "The Hindu",
+           "yahoo": "Yahoo News", "msn": "MSN", "skynews": "Sky News", "news.sky": "Sky News", "latimes": "Los Angeles Times", "nypost": "New York Post"}
+
+def outlet_of(href):
+    host = re.sub(r"^https?://", "", href or "").split("/")[0].lower(); host = re.sub(r"^(www|m|amp|edition|news)\.", "", host)
+    for k, v in OUTLETS.items():
+        if host.startswith(k + ".") or host == k or ("." + k + ".") in "." + host: return v
+    base = host.split(".")[0] if host.count(".") <= 1 else host.split(".")[-2]
+    return base.upper() if len(base) <= 4 else base.capitalize()
+
+def news_list(snap, n=4):
+    """Google News results -> [{'headline','outlet','href'}], one story per outlet first (then repeats if needed)."""
+    items, seen_h = [], set()
+    for e in snap.get("elements") or []:
+        h = e.get("href") or ""
+        if e.get("role") != "link" or not h.startswith("http"): continue
+        host = re.sub(r"^https?://", "", h).split("/")[0].lower()
+        if re.search(r"(^|\.)google\.|gstatic\.|googleusercontent\.|youtube\.com$|webcache|support\.|accounts\.", host): continue
+        lab = " ".join((e.get("label") or "").split())
+        out = outlet_of(h)
+        lab = re.sub(r"\s*\b\d+\s+(?:minutes?|mins?|hours?|days?|weeks?)\s+ago\b.*$", "", lab, flags=re.I).strip(" .-|")
+        lab = re.sub(r"^(?:[\w.]+\.(?:com|org|net|co\.uk|tv)|" + re.escape(out) + r")\s*[-:|.]?\s*(?:Video\.\s*)?", "", lab, flags=re.I).strip(" .-|")
+        if len(lab.split()) < 4 or lab.lower() in seen_h: continue
+        seen_h.add(lab.lower()); items.append({"headline": lab[:160], "outlet": out, "href": h})
+    first, rest, outs = [], [], set()
+    for it in items:
+        (rest if it["outlet"] in outs else first).append(it); outs.add(it["outlet"])
+    return (first + rest)[:n]

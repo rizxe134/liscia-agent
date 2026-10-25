@@ -34,7 +34,7 @@ class ChatReplay(unittest.TestCase):
         return out, link
     def test_replay(self):
         out, link = self.run_chat()
-        self.assertIn('Searched YouTube for "pursuit"', out[0][0])
+        self.assertNotIn('Searched YouTube', out[0][0])
         self.assertTrue(out[1][0].startswith("Playing"), out[1])
         self.assertTrue(out[2][0].startswith("Playing") and out[2][1] != out[1][1], out[2])  # "wrong song" -> a different one
         r, url = out[3]

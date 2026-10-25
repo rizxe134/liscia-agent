@@ -177,6 +177,6 @@ class EndToEnd(unittest.TestCase):
                 a.chat_ctx = st.context(cid); st.add(cid, "user", text)
                 r = a.run(text); out.append(r); st.add(cid, "assistant", r, meta=a.last_task_meta)
         self.assertIn("search_query=Frog", [a["url"] for c, a in link.calls if c == "navigate"][0])
-        self.assertIn('Searched YouTube for "Frog"', out[0]); self.assertIn("frog", out[1].lower())  # "the song" = the previous query, searched and verified
+        self.assertIn('Playing', out[0]); self.assertIn("frog", out[1].lower())  # "the song" = the previous query, searched and verified
         self.assertIn('Playing "frog" by Ptasinski', out[2]); self.assertEqual(link.url, "https://www.youtube.com/watch?v=p")
         client.chat.assert_not_called()
